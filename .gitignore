@@ -1,0 +1,23 @@
+# secrets
+.env
+.env.*
+!.env.example
+*service-account*.json
+firebase-adminsdk*.json
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# node
+node_modules/
+dist/
+.vite/
+
+# local-only source material (check reuse terms before publishing)
+backend/sample/private/
+*.ncert.pdf
+
+.DS_Store
