@@ -49,3 +49,26 @@ export interface Step {
 export interface HealthResponse { ok: boolean; version: string }
 
 export interface ApiErrorBody { error: { code: string; message: string; retryable: boolean } }
+
+export type DocumentStatus = "queued" | "reading" | "indexing" | "finding_concepts" | "concepts_ready" | "failed";
+
+export interface ConceptCard {
+  id: string;
+  name: string;
+  description: string;
+  prerequisites: string[]; // concept ids
+  pages: number[];
+}
+
+export interface DocumentView {
+  id: string;
+  title: string;
+  status: DocumentStatus;
+  progress: number; // 0-100
+  statusDetail: string;
+  pageCount: number;
+  warnings: string[];
+  error: { code: string; message: string } | null;
+  isSample: boolean;
+  concepts?: ConceptCard[];
+}

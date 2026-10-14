@@ -3,7 +3,7 @@ import { BackendStatus } from "./components/BackendStatus";
 import { Mark } from "./components/Mark";
 import { useBackendStatus } from "./hooks/useBackendStatus";
 import { Home } from "./screens/Home";
-import { Button } from "./ui/Button";
+import { Study } from "./screens/Study";
 
 export default function App() {
   const { status, retry } = useBackendStatus();
@@ -20,13 +20,7 @@ export default function App() {
       </header>
 
       {documentId ? (
-        <main className="home">
-          <section className="hero">
-            <h1 className="hero__title">Reading your notes.</h1>
-            <p className="hero__lead">The study space opens here once your material is ready.</p>
-            <Button variant="quiet" onClick={() => setDocumentId(null)}>Back</Button>
-          </section>
-        </main>
+        <Study documentId={documentId} onExit={() => setDocumentId(null)} />
       ) : (
         <Home onDocument={setDocumentId} />
       )}

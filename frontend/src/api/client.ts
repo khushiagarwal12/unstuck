@@ -1,6 +1,6 @@
 import { getIdToken } from "./auth";
 import { ApiError } from "./errors";
-import type { ApiErrorBody, HealthResponse } from "./types";
+import type { ApiErrorBody, DocumentView, HealthResponse } from "./types";
 
 export { ApiError };
 
@@ -50,6 +50,10 @@ export const api = {
       body: JSON.stringify({ title, text }),
     });
   },
+
+  getDocument: (id: string) => send<DocumentView>(`/api/documents/${id}`),
+
+  deleteDocument: (id: string) => send<{ deleted: boolean }>(`/api/documents/${id}`, { method: "DELETE" }),
 
   createSampleDocument() {
     return send<{ documentId: string }>("/api/documents/sample", { method: "POST" });
