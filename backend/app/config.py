@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     gemini_model_main: str = "gemini-3-flash-preview"
     gemini_model_fast: str = "gemini-3.1-flash-lite-preview"
     gemini_embed_model: str = ""  # confirm on Day 0
+    gemini_embed_dim: int = 768  # keeps 150 chunks of float16 vectors well under Firestore's 1 MiB limit
     llm_timeout_seconds: float = 25.0
     # Requests per minute per tier, from the AI Studio free-tier limits. Conservative defaults.
     llm_rpm_main: int = 5

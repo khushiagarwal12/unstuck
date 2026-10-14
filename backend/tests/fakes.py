@@ -34,7 +34,7 @@ class ScriptedLLM(BaseLLM):
             raise RuntimeError("ScriptedLLM has no queued reply")
         return self._replies.pop(0)
 
-    async def _embed(self, texts):
+    async def _embed(self, texts, query=False):
         # Deterministic bag-of-letters vector: similar texts land close together.
         out = []
         for t in texts:

@@ -34,7 +34,7 @@ class BaseLLM:
     async def _generate_json(self, *, prompt: str, system: str | None, tier: Tier, schema: type[BaseModel]) -> str:
         raise NotImplementedError
 
-    async def _embed(self, texts: Sequence[str]) -> list[list[float]]:
+    async def _embed(self, texts: Sequence[str], query: bool) -> list[list[float]]:
         raise NotImplementedError
 
     # -- public API ----------------------------------------------------------------------
@@ -66,8 +66,9 @@ class BaseLLM:
             retryable=True,
         )
 
-    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
-        return await self._call(lambda: self._embed(texts), "fast")
+    async def embed(self, texts: Sequence[str], *, query: bool = False) -> list[list[float]]:
+        """Embed texts. `query=True` for a search question, False for document chunks."""
+        return await self._call(lambda: self._embed(texts, query), "fast")
 
     async def _call(self, fn, tier: Tier):
         if not await self._buckets[tier].acquire(max_wait=MAX_QUEUE_WAIT_SECONDS):
@@ -105,6 +106,7 @@ class GeminiLLM(BaseLLM):
         self._client = genai.Client(api_key=settings.gemini_api_key)
         self._models = {"main": settings.gemini_model_main, "fast": settings.gemini_model_fast}
         self._embed_model = settings.gemini_embed_model
+        self._embed_dim = settings.gemini_embed_dim
 
     async def _generate_json(self, *, prompt, system, tier, schema) -> str:
         from google.genai import types
@@ -121,11 +123,23 @@ class GeminiLLM(BaseLLM):
         )
         return resp.text or ""
 
-    async def _embed(self, texts):
+    async def _embed(self, texts, query):
+        from google.genai import types
+
         if not self._embed_model:
             raise AppError("llm_not_configured", "No embedding model is configured.", status=503)
-        resp = await self._client.aio.models.embed_content(model=self._embed_model, contents=list(texts))
-        return [list(e.values) for e in resp.embeddings]
+        out: list[list[float]] = []
+        for i in range(0, len(texts), 100):  # the API caps the batch size
+            resp = await self._client.aio.models.embed_content(
+                model=self._embed_model,
+                contents=list(texts[i : i + 100]),
+                config=types.EmbedContentConfig(
+                    task_type="RETRIEVAL_QUERY" if query else "RETRIEVAL_DOCUMENT",
+                    output_dimensionality=self._embed_dim,
+                ),
+            )
+            out.extend(list(e.values) for e in resp.embeddings)
+        return out
 
 
 def build_llm(settings: Settings) -> BaseLLM:
