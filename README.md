@@ -14,46 +14,50 @@ frontend/   React + TypeScript + Vite. Design tokens and components live in src/
 
 ## Run locally
 
+You need the keys from the Day 0 checklist below. There is no keyless or demo mode: sign-in, the
+database and the model are all real.
+
 ```bash
 # backend (terminal 1)
 cd backend
 pip install -r requirements-dev.txt
-cp ../.env.example .env            # then edit; use AUTH_MODE=dev and LLM_BACKEND=fake to start without keys
+cp ../.env.example .env            # fill in GEMINI_API_KEY, FIREBASE_SERVICE_ACCOUNT_JSON and the model settings
 uvicorn app.main:app --reload --port 8000
 
 # frontend (terminal 2)
 cd frontend
-cp .env.example .env.local
+cp .env.example .env.local         # fill in the four VITE_FIREBASE_* values
 npm install
 npm run dev                        # http://localhost:5173
+
+# end-to-end check (terminal 3, repo root). Set ENABLE_DIAGNOSTICS=true in backend/.env first
+SMOKE_FIREBASE_API_KEY=<web api key> python scripts/smoke.py
 ```
 
 ## Test
 
 ```bash
-cd backend && python -m pytest -q     # learning loop, API, LLM layer
+cd backend && python -m pytest -q     # unit tests; test doubles live only in backend/tests
 cd frontend && npm run build          # typecheck + production build
 ```
 
-## Status (end of setup session)
+## Status
 
-Done and tested
-- Hypothesis tracking (`posterior.py`), mastery rule (`mastery.py`), strategy policy (`policy.py`) and
-  loop transitions (`state_machine.py`), including the "same wrong answer, different reasons" case.
-- API skeleton: `/health`, `/api/me`, one error shape, CORS, auth with a clearly separated dev mode.
-- LLM layer: rate limiter, timeout, one validation retry, provider errors mapped without leaking detail.
-- Home screen: upload and paste with validation, backend wake-up status, clear error states.
+Done
+- Learning-loop logic (`backend/app/core`): hypothesis tracking, mastery rule, strategy policy and
+  transitions, with tests, including the "same wrong answer, different reasons" case.
+- API: health, Firebase-token sign-in (no bypass), one error shape, CORS, per-user and global daily
+  limits with a judge code, Firestore store, Gemini client, and a diagnostics round trip for Day 1.
+- Frontend: Home screen, anonymous Firebase sign-in, backend wake-up status, clear error states.
 
-Not done yet
-- Firebase anonymous sign-in on the frontend and Firestore on the backend (Day 1).
-- Documents, retrieval, concepts, questions, sessions (Days 2 to 4).
-- `Learn with AI` is shown disabled on purpose (spec section 18).
+Not yet verified against live services (needs your keys)
+- `GeminiLLM` and `FirestoreStore` follow the documented SDKs and their signatures were checked, but
+  they have not run against real Google services. `scripts/smoke.py` is the first real test.
+- The Dockerfile has not been build-tested.
 
-Known gaps to be aware of
-- `GeminiLLM` follows the google-genai SDK and its signatures were checked, but it has not been run
-  against the live service because there is no API key yet. Expect to adjust it on first contact.
-- The Dockerfile was written but not build-tested (no Docker daemon in the setup session).
-- Model ids and rate limits in `.env.example` are placeholders until Day 0 is done.
+Next
+- Documents: upload, extraction, chunking, embeddings, concepts. Then the loop, then the session UI.
+- `Learn with AI` is shown disabled on purpose until the core loop is stable (spec section 18).
 
 ## Day 0 checklist (you, about an hour)
 

@@ -1,49 +1,39 @@
-def test_health_needs_no_auth(client):
-    r = client.get("/health")
-    assert r.status_code == 200
-    assert r.json()["ok"] is True
+from tests.conftest import make_client
 
 
-def test_protected_route_requires_token(client):
-    r = client.get("/api/me")
-    assert r.status_code == 401
-    err = r.json()["error"]
-    assert err["code"] == "unauthenticated"
-    assert set(err) == {"code", "message", "retryable"}
+def test_health_needs_no_auth():
+    r = make_client(signed_in=False).get("/health")
+    assert r.status_code == 200 and r.json()["ok"] is True
 
 
-def test_dev_token_round_trip(client):
-    r = client.get("/api/me", headers={"Authorization": "Bearer dev-student42"})
-    assert r.status_code == 200
-    assert r.json() == {"uid": "student42"}
+def test_protected_route_requires_a_bearer_token():
+    client = make_client(signed_in=False)
+    for headers in ({}, {"Authorization": "Basic abc"}):
+        r = client.get("/api/me", headers=headers)
+        assert r.status_code == 401
+        err = r.json()["error"]
+        assert err["code"] == "unauthenticated"
+        assert set(err) == {"code", "message", "retryable"}
 
 
-def test_malformed_tokens_rejected(client):
-    for h in ("Bearer nope", "Bearer dev-", "Basic abc"):
-        assert client.get("/api/me", headers={"Authorization": h}).status_code == 401
-
-
-def test_firebase_mode_without_config_is_a_clear_503():
-    from fastapi.testclient import TestClient
-
-    from app.config import Settings, get_settings
-    from app.main import create_app
-
-    app = create_app()
-    app.dependency_overrides[get_settings] = lambda: Settings(auth_mode="firebase")
-    r = TestClient(app, raise_server_exceptions=False).get("/api/me", headers={"Authorization": "Bearer x"})
+def test_missing_firebase_configuration_is_a_clear_503_not_a_bypass():
+    r = make_client(signed_in=False).get("/api/me", headers={"Authorization": "Bearer anything"})
     assert r.status_code == 503
     assert r.json()["error"]["code"] == "auth_not_configured"
 
 
-def test_cors_allows_only_configured_origin(client):
-    ok = client.options(
-        "/health",
-        headers={"Origin": "http://localhost:5173", "Access-Control-Request-Method": "GET"},
-    )
+def test_signed_in_user_is_identified():
+    assert make_client(uid="abc").get("/api/me").json() == {"uid": "abc"}
+
+
+def test_validation_errors_do_not_echo_submitted_values():
+    r = make_client().post("/api/diagnostics/roundtrip", json={"x": "super secret student text"})
+    assert "super secret" not in r.text
+
+
+def test_cors_allows_only_configured_origin():
+    client = make_client(signed_in=False)
+    ok = client.options("/health", headers={"Origin": "http://localhost:5173", "Access-Control-Request-Method": "GET"})
     assert ok.headers.get("access-control-allow-origin") == "http://localhost:5173"
-    bad = client.options(
-        "/health",
-        headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "GET"},
-    )
+    bad = client.options("/health", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "GET"})
     assert "access-control-allow-origin" not in bad.headers

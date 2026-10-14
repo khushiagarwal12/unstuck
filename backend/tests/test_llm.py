@@ -4,7 +4,8 @@ import pytest
 from pydantic import BaseModel
 
 from app.errors import AppError
-from app.llm.client import BaseLLM, FakeLLM
+from app.llm.client import BaseLLM
+from tests.fakes import ScriptedLLM
 from app.llm.quota import TokenBucket
 
 
@@ -18,13 +19,13 @@ def run(coro):
 
 
 def test_valid_reply_is_parsed():
-    llm = FakeLLM().queue({"answer": "a", "score": 3})
+    llm = ScriptedLLM().queue({"answer": "a", "score": 3})
     got = run(llm.generate_structured(prompt="p", schema=Verdict))
     assert got == Verdict(answer="a", score=3)
 
 
 def test_invalid_reply_gets_one_retry_that_mentions_the_problem():
-    llm = FakeLLM().queue("not json", {"answer": "b", "score": 1})
+    llm = ScriptedLLM().queue("not json", {"answer": "b", "score": 1})
     got = run(llm.generate_structured(prompt="p", schema=Verdict))
     assert got.answer == "b"
     assert len(llm.calls) == 2
@@ -32,7 +33,7 @@ def test_invalid_reply_gets_one_retry_that_mentions_the_problem():
 
 
 def test_two_invalid_replies_raise_a_retryable_error():
-    llm = FakeLLM().queue("nope", '{"answer": 5}')
+    llm = ScriptedLLM().queue("nope", '{"answer": 5}')
     with pytest.raises(AppError) as exc:
         run(llm.generate_structured(prompt="p", schema=Verdict))
     assert exc.value.code == "model_invalid_output" and exc.value.retryable
@@ -61,7 +62,7 @@ def test_timeout_is_mapped():
 
 
 def test_rate_limit_returns_busy_instead_of_calling_the_provider():
-    llm = FakeLLM(rpm_main=1).queue({"answer": "a", "score": 1}, {"answer": "b", "score": 2})
+    llm = ScriptedLLM(rpm_main=1).queue({"answer": "a", "score": 1}, {"answer": "b", "score": 2})
     run(llm.generate_structured(prompt="p", schema=Verdict))
     with pytest.raises(AppError) as exc:
         run(llm.generate_structured(prompt="p", schema=Verdict))

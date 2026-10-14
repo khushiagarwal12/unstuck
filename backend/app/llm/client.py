@@ -1,7 +1,7 @@
 """The only place that talks to a model (ARCHITECTURE.md rule 6).
 
 BaseLLM adds rate limiting, a timeout and one validation retry around a backend-specific
-`_generate_json`. Backends: GeminiLLM (AI Studio today, Vertex later) and FakeLLM (tests).
+`_generate_json`. Backend: GeminiLLM (AI Studio today, Vertex AI after credits).
 """
 
 from __future__ import annotations
@@ -128,37 +128,5 @@ class GeminiLLM(BaseLLM):
         return [list(e.values) for e in resp.embeddings]
 
 
-class FakeLLM(BaseLLM):
-    """Deterministic stand-in for tests and offline development.
-
-    Queue replies with `.queue(...)`. Never used for real learning flows (ARCHITECTURE.md rule 5).
-    """
-
-    def __init__(self, *, timeout: float = 5.0, rpm_main: int = 1000, rpm_fast: int = 1000):
-        super().__init__(timeout=timeout, rpm_main=rpm_main, rpm_fast=rpm_fast)
-        self._replies: list[str] = []
-        self.calls: list[dict] = []
-
-    def queue(self, *replies: str | BaseModel | dict) -> "FakeLLM":
-        for r in replies:
-            if isinstance(r, BaseModel):
-                r = r.model_dump_json()
-            elif isinstance(r, dict):
-                r = json.dumps(r)
-            self._replies.append(r)
-        return self
-
-    async def _generate_json(self, *, prompt, system, tier, schema) -> str:
-        self.calls.append({"prompt": prompt, "tier": tier, "schema": schema.__name__})
-        if not self._replies:
-            raise RuntimeError("FakeLLM has no queued reply")
-        return self._replies.pop(0)
-
-    async def _embed(self, texts):
-        return [[float(len(t) % 7), float(len(t) % 5), 1.0] for t in texts]
-
-
 def build_llm(settings: Settings) -> BaseLLM:
-    if settings.llm_backend == "fake":
-        return FakeLLM()
     return GeminiLLM(settings)

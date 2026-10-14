@@ -1,28 +1,15 @@
+import { getIdToken } from "./auth";
+import { ApiError } from "./errors";
 import type { ApiErrorBody, HealthResponse } from "./types";
 
+export { ApiError };
+
 const BASE = (import.meta.env.VITE_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
-
-export class ApiError extends Error {
-  constructor(
-    public code: string,
-    message: string,
-    public retryable = false,
-    public status = 0,
-  ) {
-    super(message);
-  }
-}
-
-/** Day 1 swaps this for the Firebase anonymous-auth ID token. */
-async function getToken(): Promise<string> {
-  if (import.meta.env.VITE_DEV_AUTH === "1") return "dev-local";
-  throw new ApiError("auth_not_ready", "Sign-in isn't set up yet.");
-}
 
 async function send<T>(path: string, init: RequestInit & { auth?: boolean; timeoutMs?: number } = {}): Promise<T> {
   const { auth = true, timeoutMs = 30_000, ...rest } = init;
   const headers = new Headers(rest.headers);
-  if (auth) headers.set("Authorization", `Bearer ${await getToken()}`);
+  if (auth) headers.set("Authorization", `Bearer ${await getIdToken()}`);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

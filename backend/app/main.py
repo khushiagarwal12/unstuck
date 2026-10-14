@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import User, current_user
 from .config import Settings, get_settings
+from .api import diagnostics, usage
 from .errors import install_error_handlers
 from .schemas import HealthResponse
 
@@ -37,6 +38,8 @@ def create_app() -> FastAPI:
         """Confirms the sign-in round trip end to end (Day 1 exit check)."""
         return {"uid": user.uid}
 
+    app.include_router(diagnostics.router)
+    app.include_router(usage.router)
     return app
 
 
