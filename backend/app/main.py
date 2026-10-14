@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import User, current_user
 from .config import Settings, get_settings
-from .api import diagnostics, usage
+from .api import diagnostics, documents, usage
 from .errors import install_error_handlers
 from .schemas import HealthResponse
 
@@ -24,7 +24,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_methods=["GET", "POST", "DELETE"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", "X-Judge-Code"],
     )
     install_error_handlers(app)
 
@@ -40,6 +40,7 @@ def create_app() -> FastAPI:
 
     app.include_router(diagnostics.router)
     app.include_router(usage.router)
+    app.include_router(documents.router)
     return app
 
 

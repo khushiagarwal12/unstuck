@@ -37,6 +37,9 @@ class BaseLLM:
     async def _embed(self, texts: Sequence[str], query: bool) -> list[list[float]]:
         raise NotImplementedError
 
+    async def _transcribe(self, data: bytes, mime: str, prompt: str) -> str:
+        raise NotImplementedError
+
     # -- public API ----------------------------------------------------------------------
     async def generate_structured(
         self, *, prompt: str, schema: type[T], tier: Tier = "main", system: str | None = None
@@ -65,6 +68,10 @@ class BaseLLM:
             status=502,
             retryable=True,
         )
+
+    async def transcribe_image(self, data: bytes, mime: str, prompt: str) -> str:
+        """Read the text in an image (a scanned page or a photo of notes). Uses the fast tier."""
+        return await self._call(lambda: self._transcribe(data, mime, prompt), "fast")
 
     async def embed(self, texts: Sequence[str], *, query: bool = False) -> list[list[float]]:
         """Embed texts. `query=True` for a search question, False for document chunks."""
@@ -120,6 +127,16 @@ class GeminiLLM(BaseLLM):
                 response_schema=schema,
                 temperature=0.4,
             ),
+        )
+        return resp.text or ""
+
+    async def _transcribe(self, data, mime, prompt):
+        from google.genai import types
+
+        resp = await self._client.aio.models.generate_content(
+            model=self._models["fast"],
+            contents=[types.Part.from_bytes(data=data, mime_type=mime), prompt],
+            config=types.GenerateContentConfig(temperature=0.0),
         )
         return resp.text or ""
 

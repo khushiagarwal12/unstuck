@@ -34,6 +34,12 @@ class ScriptedLLM(BaseLLM):
             raise RuntimeError("ScriptedLLM has no queued reply")
         return self._replies.pop(0)
 
+    async def _transcribe(self, data, mime, prompt):
+        self.calls.append({"transcribe": mime, "bytes": len(data)})
+        if not self._replies:
+            raise RuntimeError("ScriptedLLM has no queued reply")
+        return self._replies.pop(0)
+
     async def _embed(self, texts, query=False):
         # Deterministic bag-of-letters vector: similar texts land close together.
         out = []

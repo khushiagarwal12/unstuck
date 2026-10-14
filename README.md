@@ -48,9 +48,16 @@ Done
   transitions, with tests, including the "same wrong answer, different reasons" case.
 - API: health, Firebase-token sign-in (no bypass), one error shape, CORS, per-user and global daily
   limits with a judge code, Firestore store, Gemini client, and a diagnostics round trip for Day 1.
+- Documents (`backend/app/ingestion`, `retrieval`, `api/documents.py`): PDF/PNG/JPG/paste intake with
+  magic-byte checks and limits, page-aware chunking, best-effort vision reading of scans, float16
+  embeddings with in-memory search, quote-verified concept extraction (prerequisite graph is a DAG),
+  a resumable background pipeline, status polling, delete, and a sample document that is processed
+  once and copied for later users. 95 backend tests pass.
 - Frontend: Home screen, anonymous Firebase sign-in, backend wake-up status, clear error states.
 
 Not yet verified against live services (needs your keys)
+- Vision reading and embeddings (`GeminiLLM._transcribe`/`_embed`) are also unrun; confirm the embedding
+  model id (`GEMINI_EMBED_MODEL`) on Day 0.
 - `GeminiLLM` and `FirestoreStore` follow the documented SDKs and their signatures were checked, but
   they have not run against real Google services. `scripts/smoke.py` is the first real test.
 - The Dockerfile has not been build-tested.
