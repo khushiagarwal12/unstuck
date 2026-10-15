@@ -29,14 +29,21 @@ class Settings(BaseSettings):
     llm_rpm_main: int = 5
     llm_rpm_fast: int = 10
 
-    # Auth: Firebase ID tokens or dev fallback
-    auth_mode: Literal["dev", "firebase"] = "dev"
+    # Auth: Firebase ID tokens verified via Firebase Admin SDK
     firebase_service_account_json: str = ""
 
     # Enables /api/diagnostics/roundtrip, the Day 1 end-to-end check. Keep off on a public host.
     enable_diagnostics: bool = False
 
-    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+    cors_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "https://unstuck-api-783684471532.us-central1.run.app",
+            "https://unstuck-e6012.web.app",
+            "https://unstuck-e6012.firebaseapp.com",
+        ]
+    )
 
     # Abuse protection (section 10 of ARCHITECTURE.md)
     daily_uploads_per_user: int = 3

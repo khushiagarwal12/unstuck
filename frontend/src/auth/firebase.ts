@@ -33,40 +33,20 @@ if (isConfigured) {
   }
 }
 
-/** Fallback local UID when Firebase isn't configured or offline */
-function getLocalFallbackUid(): string {
-  let stored = localStorage.getItem("unstuck_uid");
-  if (!stored) {
-    stored = "student_" + Math.random().toString(36).substring(2, 9);
-    localStorage.setItem("unstuck_uid", stored);
-  }
-  return stored;
-}
-
 /**
  * Get the authorization token for backend requests.
- * Uses Firebase ID token in production, or 'dev-<uid>' in local dev mode.
+ * Uses real Firebase ID token for authenticated requests.
  */
 export async function getAuthToken(): Promise<string> {
-  const isDevAuth = import.meta.env.VITE_DEV_AUTH === "1";
-
   if (!auth) {
-    return `dev-${getLocalFallbackUid()}`;
+    throw new Error("Firebase Authentication is not configured.");
   }
 
   // Ensure an auth session exists
   let user = auth.currentUser;
   if (!user) {
-    try {
-      const cred = await signInAnonymously(auth);
-      user = cred.user;
-    } catch {
-      return `dev-${getLocalFallbackUid()}`;
-    }
-  }
-
-  if (isDevAuth) {
-    return `dev-${user.uid}`;
+    const cred = await signInAnonymously(auth);
+    user = cred.user;
   }
 
   return await user.getIdToken();

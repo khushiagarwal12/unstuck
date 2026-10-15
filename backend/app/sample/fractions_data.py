@@ -294,3 +294,23 @@ SAMPLE_QUESTIONS = [
         "verified": True,
     },
 ]
+
+# Pre-generated curated sample explanations for deterministic signature demo
+SAMPLE_EXPLANATIONS = {
+    "c_comparing_fractions_analogy_visual": {
+        "strategy": "analogy_visual",
+        "title": "Why a Bigger Denominator Means Smaller Slices",
+        "body_markdown": "In 3/8, the 8 means the whole is divided into 8 equal parts, making each individual piece smaller. As noted in your notes: 'In 3/8, the 8 means very small pieces, so 3/8 is less than half, while 2/3 is more than half.'",
+        "visual": {"type": "fraction_bar", "params": {"fractions": [{"num": 2, "den": 3, "label": "2/3"}, {"num": 3, "den": 8, "label": "3/8"}]}},
+        "source_refs": [{"chunk_id": "c2", "page": 3, "quote": "In 3/8, the 8 means very small pieces, so 3/8 is less than half, while 2/3 is more than half."}],
+        "grounded": True,
+    },
+    "c_comparing_fractions_worked_example": {
+        "strategy": "worked_example",
+        "title": "Converting to Common Denominators Step by Step",
+        "body_markdown": "Instead of looking at the gap between numbers, find equivalent fractions: 2/3 = 16/24 and 3/8 = 9/24. Since 16/24 > 9/24, 2/3 is greater than 3/8. As stated in your notes: 'Never assume that a fraction with bigger numbers is always larger.'",
+        "visual": {"type": "fraction_bar", "params": {"fractions": [{"num": 16, "den": 24, "label": "16/24"}, {"num": 9, "den": 24, "label": "9/24"}]}},
+        "source_refs": [{"chunk_id": "c2", "page": 3, "quote": "Never assume that a fraction with bigger numbers is always larger. In 3/8, the 8 means very small pieces"}],
+        "grounded": True,
+    },
+}

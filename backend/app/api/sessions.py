@@ -79,15 +79,7 @@ async def _ensure_concept_catalog(
         return misconceptions
 
     if llm is None:
-        fallback = [
-            {
-                "id": "M1",
-                "label": "Overgeneralization error",
-                "description": "Applying a rule that worked in a previous context incorrectly.",
-                "preferred_strategies": ["hint", "simplified", "worked_example"],
-            }
-        ]
-        return fallback
+        raise AppError("model_unavailable", "The tutor AI model is currently unavailable. Please try again.", status=503, retryable=True)
 
     # Generate catalog lazily
     prompt = (
@@ -113,16 +105,8 @@ async def _ensure_concept_catalog(
         })
         return misconceptions_data
     except Exception as exc:
-        log.warning("Catalog generation failed, using fallback: %s", exc)
-        fallback = [
-            {
-                "id": "M1",
-                "label": "Overgeneralization error",
-                "description": "Applying a rule that worked in a previous context incorrectly.",
-                "preferred_strategies": ["hint", "simplified", "worked_example"],
-            }
-        ]
-        return fallback
+        log.warning("Catalog generation failed: %s", exc)
+        raise AppError("model_unavailable", "Failed to diagnose concept misconceptions. Please try again.", status=503, retryable=True)
 
 
 async def _get_or_create_probe_question(
@@ -462,51 +446,68 @@ async def answer_step(
         tried_strategies.append(strategy)
 
         # Generate grounded explanation
-        context_text = "\n\n".join(f"[{c['id']}] (Page {c['page']}): {c['text']}" for c in chunks[:4])
-        exp_prompt = (
-            f"<STUDENT_CONTEXT>\n"
-            f"Concept: {concept.get('name')}\n"
-            f"Target Misconception: {top_label} - {m_info.get('description', '') if m_info else ''}\n"
-            f"Assigned Strategy: {strategy}\n"
-            f"Diagnosis Status: {'supported' if hypothesis_accepted else 'tentative'}\n"
-            f"Evidence: {hypothesis_obj.evidence if hypothesis_obj else ''}\n"
-            f"</STUDENT_CONTEXT>\n\n"
-            f"<STUDY_MATERIAL>\n{context_text}\n</STUDY_MATERIAL>\n\n"
-            f"Generate a clear, friendly explanation using the '{strategy}' strategy."
-        )
-
+        # First: check for pre-authored sample explanation (isSample docs)
         explanation_model = None
-        exp_llm = _safe_llm()
-        if exp_llm:
-            try:
-                gen_exp = await exp_llm.generate_structured(
-                    prompt=exp_prompt,
-                    schema=GeneratedExplanation,
-                    tier="main",
-                    system="You are an adaptive tutor. Ground explanations in the provided chunks and include exact quotes in source_refs.",
-                )
-                valid_refs = validate_citations(gen_exp.source_refs, chunks_by_id)
-                grounded = len(valid_refs) > 0
+        doc_record = await db.get_document(doc_id)
+        if doc_record and doc_record.get("isSample"):
+            from ..sample.fractions_data import SAMPLE_EXPLANATIONS
+            sample_key = f"{concept_id}_{strategy}"
+            sample_exp = SAMPLE_EXPLANATIONS.get(sample_key)
+            if sample_exp:
                 explanation_model = Explanation(
-                    strategy=strategy,
-                    title=gen_exp.title,
-                    body_markdown=gen_exp.body_markdown,
-                    visual=gen_exp.visual or (VisualSpec(type="fraction_bar", params={"fractions": [{"num": 1, "den": 4, "label": "1/4"}, {"num": 1, "den": 8, "label": "1/8"}]}) if "fraction" in concept.get("name", "").lower() else None),
-                    source_refs=valid_refs,
-                    grounded=grounded,
+                    strategy=sample_exp["strategy"],
+                    title=sample_exp["title"],
+                    body_markdown=sample_exp["body_markdown"],
+                    visual=VisualSpec(**sample_exp["visual"]) if sample_exp.get("visual") else None,
+                    source_refs=sample_exp["source_refs"],
+                    grounded=sample_exp["grounded"],
                 )
-            except Exception as exc:
-                log.warning("Explanation generation failed, using curated fallback: %s", exc)
+                log.info("Using pre-authored sample explanation for %s/%s", concept_id, strategy)
 
+        # Fall back to LLM-generated explanation if no sample match
         if not explanation_model:
-            explanation_model = Explanation(
-                strategy=strategy,
-                title="Understanding Part Sizes",
-                body_markdown="When a whole is divided into more pieces, each individual piece becomes smaller. Think of sharing a cake: sharing with 8 people gives smaller pieces than sharing with 4 people! So 1/8 is smaller than 1/4.",
-                visual=VisualSpec(type="fraction_bar", params={"fractions": [{"num": 1, "den": 4, "label": "1/4"}, {"num": 1, "den": 8, "label": "1/8"}]}),
-                source_refs=concept.get("sourceRefs", []),
-                grounded=True,
+            context_text = "\n\n".join(f"[{c['id']}] (Page {c['page']}): {c['text']}" for c in chunks[:4])
+            exp_prompt = (
+                f"<STUDENT_CONTEXT>\n"
+                f"Concept: {concept.get('name')}\n"
+                f"Target Misconception: {top_label} - {m_info.get('description', '') if m_info else ''}\n"
+                f"Assigned Strategy: {strategy}\n"
+                f"Diagnosis Status: {'supported' if hypothesis_accepted else 'tentative'}\n"
+                f"Evidence: {hypothesis_obj.evidence if hypothesis_obj else ''}\n"
+                f"</STUDENT_CONTEXT>\n\n"
+                f"<STUDY_MATERIAL>\n{context_text}\n</STUDY_MATERIAL>\n\n"
+                f"Generate a clear, friendly explanation using the '{strategy}' strategy."
             )
+
+            exp_llm = _safe_llm()
+            if exp_llm:
+                try:
+                    gen_exp = await exp_llm.generate_structured(
+                        prompt=exp_prompt,
+                        schema=GeneratedExplanation,
+                        tier="main",
+                        system="You are an adaptive tutor. Ground explanations in the provided chunks and include exact quotes in source_refs.",
+                    )
+                    valid_refs = validate_citations(gen_exp.source_refs, chunks_by_id)
+                    grounded = len(valid_refs) > 0
+                    explanation_model = Explanation(
+                        strategy=strategy,
+                        title=gen_exp.title,
+                        body_markdown=gen_exp.body_markdown,
+                        visual=gen_exp.visual or (VisualSpec(type="fraction_bar", params={"fractions": [{"num": 1, "den": 4, "label": "1/4"}, {"num": 1, "den": 8, "label": "1/8"}]}) if "fraction" in concept.get("name", "").lower() else None),
+                        source_refs=valid_refs,
+                        grounded=grounded,
+                    )
+                except Exception as exc:
+                    log.warning("Explanation generation failed: %s", exc)
+
+            if not explanation_model:
+                raise AppError(
+                    "model_unavailable",
+                    "The tutor was temporarily unable to generate an explanation. Please try again.",
+                    status=503,
+                    retryable=True,
+                )
 
         session["lastExplanation"] = explanation_model.model_dump()
         next_step = Step(

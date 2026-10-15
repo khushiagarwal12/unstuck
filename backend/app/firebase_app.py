@@ -17,10 +17,17 @@ def ensure_firebase(settings: Settings) -> None:
         return
     except ValueError:
         pass  # not initialised yet
-    if not settings.firebase_service_account_json:
-        raise AppError("auth_not_configured", "The server is missing its Firebase configuration.", status=503)
-    try:
-        cred = credentials.Certificate(json.loads(settings.firebase_service_account_json))
-    except Exception:  # never echo the key material
-        raise AppError("auth_not_configured", "The Firebase configuration is invalid.", status=503)
-    firebase_admin.initialize_app(cred)
+
+    if settings.firebase_service_account_json:
+        try:
+            cred = credentials.Certificate(json.loads(settings.firebase_service_account_json))
+            firebase_admin.initialize_app(cred)
+            return
+        except Exception:
+            raise AppError("auth_not_configured", "The Firebase configuration is invalid.", status=503)
+
+    if settings.google_cloud_project:
+        firebase_admin.initialize_app(options={"projectId": settings.google_cloud_project})
+        return
+
+    raise AppError("auth_not_configured", "The server is missing its Firebase configuration.", status=503)

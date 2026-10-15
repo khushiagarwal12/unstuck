@@ -397,15 +397,18 @@ def get_db(settings: Settings = Depends(get_settings)) -> Database:
     """Return database client based on settings."""
     global _memory_db_instance
 
-    if settings.auth_mode == "firebase" and settings.firebase_service_account_json:
+    if settings.firebase_service_account_json or settings.google_cloud_project:
         try:
             import json
             import firebase_admin
             from firebase_admin import credentials, firestore
 
             if not firebase_admin._apps:
-                cred = credentials.Certificate(json.loads(settings.firebase_service_account_json))
-                firebase_admin.initialize_app(cred)
+                if settings.firebase_service_account_json:
+                    cred = credentials.Certificate(json.loads(settings.firebase_service_account_json))
+                    firebase_admin.initialize_app(cred)
+                elif settings.google_cloud_project:
+                    firebase_admin.initialize_app(options={"projectId": settings.google_cloud_project})
             return FirestoreDatabase(firestore.client())
         except Exception as exc:
             log.warning("Could not initialize real Firestore, falling back to MemoryDatabase: %s", exc)

@@ -18,7 +18,8 @@ from ..config import Settings, get_settings
 from ..errors import AppError
 from ..ingestion.chunk import TextChunk
 from ..ingestion.pipeline import run_ingestion_pipeline
-from ..llm.client import BaseLLM, build_llm
+from ..deps import get_llm
+from ..llm.client import BaseLLM
 from ..sample.fractions_data import (
     SAMPLE_CONCEPTS,
     SAMPLE_DOC_TITLE,
@@ -38,7 +39,9 @@ def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-@router.post("")
+from ..ingestion.extract import extract_pasted, extract_upload
+
+@router.post("", status_code=202)
 async def create_document(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -46,32 +49,39 @@ async def create_document(
     user: User = Depends(current_user),
     db: Database = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    llm: BaseLLM = Depends(get_llm),
 ):
     """Upload a PDF/PNG/JPG file or provide JSON {title, text}."""
+    file_bytes: bytes | None = None
+    pasted_text: str | None = None
+    doc_title: str = "Notes"
+
+    # 1. Validate payload before consuming user quota
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            raise AppError("invalid_request", "Invalid JSON payload.", status=400)
+        pasted_text = body.get("text", "")
+        doc_title = body.get("title", "Pasted notes")
+        extract_pasted(pasted_text)
+        content_hash = hashlib.sha256(pasted_text.encode("utf-8")).hexdigest()[:16]
+    elif file is not None and getattr(file, "filename", None):
+        file_bytes = await file.read()
+        doc_title = file.filename or "Uploaded document"
+        extract_upload(file_bytes)
+        content_hash = hashlib.sha256(file_bytes).hexdigest()[:16]
+    else:
+        raise AppError("unsupported_file", "Provide either a supported file or pasted text.", status=415)
+
+    # 2. Check and increment usage quota
     today = _today_str()
     allowed = await db.check_and_increment_usage(user.uid, "uploads", settings.daily_uploads_per_user, today)
     if not allowed:
         raise AppError("quota_exceeded", "Daily upload limit reached. Try the sample notes or check back tomorrow.", status=429)
 
     doc_id = f"doc_{uuid.uuid4().hex[:12]}"
-    file_bytes: bytes | None = None
-    pasted_text: str | None = None
-    doc_title: str = "Notes"
-
-    # Check content type
-    content_type = request.headers.get("content-type", "")
-    if "application/json" in content_type:
-        body = await request.json()
-        pasted_text = body.get("text", "")
-        doc_title = body.get("title", "Pasted notes")
-        content_hash = hashlib.sha256(pasted_text.encode("utf-8")).hexdigest()[:16]
-    elif file is not None:
-        file_bytes = await file.read()
-        doc_title = file.filename or "Uploaded document"
-        content_hash = hashlib.sha256(file_bytes).hexdigest()[:16]
-    else:
-        raise AppError("invalid_request", "Provide either a file or pasted text.", status=400)
-
     doc_record = {
         "id": doc_id,
         "userId": user.uid,
@@ -91,7 +101,6 @@ async def create_document(
     }
     await db.save_document(doc_id, doc_record)
 
-    llm = build_llm(settings)
     background_tasks.add_task(
         run_ingestion_pipeline,
         doc_id=doc_id,
@@ -167,7 +176,7 @@ async def get_document(
         raise AppError("not_found", "Document not found.", status=404)
 
     concepts = await db.get_concepts(doc_id)
-    return {
+    res = {
         "id": doc_id,
         "status": doc.get("status"),
         "progress": doc.get("progress", 0.0),
@@ -178,6 +187,9 @@ async def get_document(
         "warnings": doc.get("warnings", []),
         "concepts": concepts,
     }
+    if "error" in doc:
+        res["error"] = doc["error"]
+    return res
 
 
 @router.delete("/{doc_id}")
@@ -192,4 +204,4 @@ async def delete_document(
         raise AppError("not_found", "Document not found.", status=404)
 
     await db.delete_document(doc_id)
-    return {"ok": True}
+    return {"deleted": True, "ok": True}
