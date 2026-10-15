@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # AI. Model ids are confirmed on Day 0 from the AI Studio rate-limit page.
     llm_backend: Literal["aistudio", "vertex"] = "aistudio"
     gemini_api_key: str = ""
+    # Vertex AI settings (used when llm_backend="vertex")
+    google_cloud_project: str = ""
+    google_cloud_location: str = "us-central1"
     gemini_model_main: str = "gemini-3-flash-preview"
     gemini_model_fast: str = "gemini-3.1-flash-lite-preview"
     gemini_embed_model: str = ""  # confirm on Day 0
@@ -26,13 +29,14 @@ class Settings(BaseSettings):
     llm_rpm_main: int = 5
     llm_rpm_fast: int = 10
 
-    # Auth: Firebase ID tokens only.
+    # Auth: Firebase ID tokens or dev fallback
+    auth_mode: Literal["dev", "firebase"] = "dev"
     firebase_service_account_json: str = ""
 
     # Enables /api/diagnostics/roundtrip, the Day 1 end-to-end check. Keep off on a public host.
     enable_diagnostics: bool = False
 
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
 
     # Abuse protection (section 10 of ARCHITECTURE.md)
     daily_uploads_per_user: int = 3

@@ -107,10 +107,19 @@ class GeminiLLM(BaseLLM):
         from google import genai
 
         if settings.llm_backend == "vertex":
-            raise AppError("not_supported", "Vertex AI mode is wired in after credits arrive.", status=501)
-        if not settings.gemini_api_key:
-            raise AppError("llm_not_configured", "The server is missing its Gemini API key.", status=503)
-        self._client = genai.Client(api_key=settings.gemini_api_key)
+            if not settings.google_cloud_project:
+                raise AppError("llm_not_configured", "GOOGLE_CLOUD_PROJECT is required for Vertex AI mode.", status=503)
+            self._client = genai.Client(
+                vertexai=True,
+                project=settings.google_cloud_project,
+                location=settings.google_cloud_location,
+            )
+            log.info("LLM backend: Vertex AI (project=%s, location=%s)", settings.google_cloud_project, settings.google_cloud_location)
+        else:
+            if not settings.gemini_api_key:
+                raise AppError("llm_not_configured", "The server is missing its Gemini API key.", status=503)
+            self._client = genai.Client(api_key=settings.gemini_api_key)
+            log.info("LLM backend: AI Studio")
         self._models = {"main": settings.gemini_model_main, "fast": settings.gemini_model_fast}
         self._embed_model = settings.gemini_embed_model
         self._embed_dim = settings.gemini_embed_dim

@@ -77,7 +77,7 @@ async def create_course(
 
     course_id = f"course_{uuid.uuid4().hex[:10]}"
     doc_id = f"doc_topic_{uuid.uuid4().hex[:10]}"
-    llm = build_llm(settings)
+    llm: Optional[BaseLLM] = None
 
     # 1. Scope topic concepts with prerequisites
     scope_prompt = (
@@ -88,6 +88,7 @@ async def create_course(
     )
 
     try:
+        llm = build_llm(settings)
         scope = await llm.generate_structured(
             prompt=scope_prompt,
             schema=TopicCourseScope,
@@ -141,33 +142,34 @@ async def create_course(
     )
 
     placement_questions: list[Question] = []
-    try:
-        batch_res = await llm.generate_structured(
-            prompt=placement_prompt,
-            schema=BatchedPlacementQuestions,
-            tier="main",
-            system="Generate a single multiple-choice diagnostic question per concept for placement.",
-        )
-        for idx, gq in enumerate(batch_res.questions):
-            cid = ordered_concept_ids[idx] if idx < len(ordered_concept_ids) else ordered_concept_ids[0]
-            qid = f"q_place_{uuid.uuid4().hex[:8]}"
-            q_model = Question(
-                id=qid,
-                concept_id=cid,
-                kind="probe",
-                stem=gq.stem,
-                options=[Option(id=o.id, text=o.text, signals=o.signals) for o in gq.options],
-                correct_option_id=gq.correct_option_id,
-                rationale=gq.rationale,
-                context_tag="placement_diagnostic",
-                visual=gq.visual,
-                source_chunk_ids=[],
-                verified=True,
+    if llm is not None:
+        try:
+            batch_res = await llm.generate_structured(
+                prompt=placement_prompt,
+                schema=BatchedPlacementQuestions,
+                tier="main",
+                system="Generate a single multiple-choice diagnostic question per concept for placement.",
             )
-            placement_questions.append(q_model)
-            await db.save_question(doc_id, q_model.model_dump())
-    except Exception as exc:
-        log.warning("Placement generation fallback: %s", exc)
+            for idx, gq in enumerate(batch_res.questions):
+                cid = ordered_concept_ids[idx] if idx < len(ordered_concept_ids) else ordered_concept_ids[0]
+                qid = f"q_place_{uuid.uuid4().hex[:8]}"
+                q_model = Question(
+                    id=qid,
+                    concept_id=cid,
+                    kind="probe",
+                    stem=gq.stem,
+                    options=[Option(id=o.id, text=o.text, signals=o.signals) for o in gq.options],
+                    correct_option_id=gq.correct_option_id,
+                    rationale=gq.rationale,
+                    context_tag="placement_diagnostic",
+                    visual=gq.visual,
+                    source_chunk_ids=[],
+                    verified=True,
+                )
+                placement_questions.append(q_model)
+                await db.save_question(doc_id, q_model.model_dump())
+        except Exception as exc:
+            log.warning("Placement generation fallback: %s", exc)
 
     # 4. Formulate initial plan (ordered topologically)
     plan = [

@@ -12,16 +12,29 @@ from pydantic import BaseModel, Field
 from ..schemas import SourceRef, Strategy, VisualSpec
 
 
-class ConceptItem(BaseModel):
-    id: str
+class SourceQuote(BaseModel):
+    chunk_id: str
+    quote: str
+
+
+class ConceptDraft(BaseModel):
     name: str
-    description: str
+    description: str = ""
+    prerequisites: list[str] = Field(default_factory=list)
+    sources: list[SourceQuote] = Field(default_factory=list)
+
+
+class ConceptItem(BaseModel):
+    id: str = ""
+    name: str
+    description: str = ""
     prerequisites: list[str] = Field(default_factory=list)
     source_refs: list[SourceRef] = Field(default_factory=list)
+    sources: list[SourceQuote] = Field(default_factory=list)
 
 
 class ConceptList(BaseModel):
-    concepts: list[ConceptItem] = Field(min_length=1)
+    concepts: list[ConceptItem | ConceptDraft] = Field(min_length=1)
 
 
 class MisconceptionItem(BaseModel):

@@ -21,3 +21,4 @@ backend/sample/private/
 *.ncert.pdf
 
 .DS_Store
+firebase-debug.log

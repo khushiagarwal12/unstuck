@@ -28,6 +28,10 @@ async def current_user(
 ) -> User:
     token = _bearer(authorization)
 
+    if settings.auth_mode == "dev" and token.startswith("dev-"):
+        uid = token[4:]
+        return User(uid=uid or "student_guest")
+
     ensure_firebase(settings)
     from firebase_admin import auth
 

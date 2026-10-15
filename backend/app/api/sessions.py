@@ -71,12 +71,23 @@ async def _ensure_concept_catalog(
     doc_id: str,
     concept: dict,
     db: Database,
-    llm: BaseLLM,
+    llm: Optional[BaseLLM] = None,
 ) -> list[dict]:
     """Ensure misconception catalog is generated for concept (JIT)."""
     misconceptions = concept.get("misconceptions", [])
     if misconceptions:
         return misconceptions
+
+    if llm is None:
+        fallback = [
+            {
+                "id": "M1",
+                "label": "Overgeneralization error",
+                "description": "Applying a rule that worked in a previous context incorrectly.",
+                "preferred_strategies": ["hint", "simplified", "worked_example"],
+            }
+        ]
+        return fallback
 
     # Generate catalog lazily
     prompt = (
@@ -120,13 +131,16 @@ async def _get_or_create_probe_question(
     concept: dict,
     misconceptions: list[dict],
     db: Database,
-    llm: BaseLLM,
+    llm: Optional[BaseLLM] = None,
 ) -> Question:
     """Retrieve existing verified probe question or generate a fresh one."""
     existing = await db.get_questions_for_concept(doc_id, concept_id)
     probe = next((q for q in existing if q.get("kind") == "probe" and q.get("verified")), None)
     if probe:
         return Question.model_validate(probe)
+
+    if llm is None:
+        raise AppError("llm_not_configured", "The AI model is not configured to generate probe questions.", status=503)
 
     # Retrieve source chunks
     index = await retrieval_store.get_index(doc_id, db)
@@ -162,11 +176,15 @@ async def create_session(
     if not concept:
         raise AppError("not_found", "Concept not found in document.", status=404)
 
-    llm = build_llm(settings)
+    def _safe_llm() -> Optional[BaseLLM]:
+        try:
+            return build_llm(settings)
+        except Exception:
+            return None
 
     # 1. JIT: Ensure catalog and probe question exist
-    misconceptions = await _ensure_concept_catalog(req.documentId, concept, db, llm)
-    probe_q = await _get_or_create_probe_question(req.documentId, req.conceptId, concept, misconceptions, db, llm)
+    misconceptions = await _ensure_concept_catalog(req.documentId, concept, db, _safe_llm())
+    probe_q = await _get_or_create_probe_question(req.documentId, req.conceptId, concept, misconceptions, db, _safe_llm())
 
     # 2. Initialize posterior over catalog misconceptions + NONE
     m_ids = [m["id"] for m in misconceptions]
@@ -260,7 +278,11 @@ async def answer_step(
     chosen_option = next((o for o in question.options if o.id == req.optionId), None)
     is_correct = (req.optionId == question.correct_option_id) if req.optionId else False
 
-    llm = build_llm(settings)
+    def _safe_llm() -> Optional[BaseLLM]:
+        try:
+            return build_llm(settings)
+        except Exception:
+            return None
 
     # 1. Update posterior
     posterior = session.get("posterior", {})
@@ -276,16 +298,18 @@ async def answer_step(
         misconceptions = concept.get("misconceptions", [])
         m_map = {m["id"]: m["description"] for m in misconceptions}
         catalog_str = "\n".join(f"{mid}: {desc}" for mid, desc in m_map.items())
-        try:
-            reading_res = await llm.generate_structured(
-                prompt=f"<CATALOG>\n{catalog_str}\n</CATALOG>\n<STUDENT_EXPLANATION>\n{req.freeText}\n</STUDENT_EXPLANATION>",
-                schema=JustificationReading,
-                tier="fast",
-                system="You evaluate student free-text justifications for misconceptions. Output JustificationReading JSON.",
-            )
-            posterior = update_on_justification(posterior, reading_res.readings)
-        except Exception as exc:
-            log.warning("Free-text reading error: %s", exc)
+        llm = _safe_llm()
+        if llm:
+            try:
+                reading_res = await llm.generate_structured(
+                    prompt=f"<CATALOG>\n{catalog_str}\n</CATALOG>\n<STUDENT_EXPLANATION>\n{req.freeText}\n</STUDENT_EXPLANATION>",
+                    schema=JustificationReading,
+                    tier="fast",
+                    system="You evaluate student free-text justifications for misconceptions. Output JustificationReading JSON.",
+                )
+                posterior = update_on_justification(posterior, reading_res.readings)
+            except Exception as exc:
+                log.warning("Free-text reading error: %s", exc)
 
     decision = decide(posterior)
     hypothesis_accepted = decision.accepted
@@ -399,6 +423,9 @@ async def answer_step(
             follow_up_q = Question.model_validate(follow_up_q_data)
         else:
             disc_pair = (decision.top_id, decision.second_id) if decision.second_id else None
+            q_llm = _safe_llm()
+            if not q_llm:
+                raise AppError("llm_not_configured", "The AI model is required to generate follow-up questions.", status=503)
             follow_up_q = await generate_and_validate_question(
                 concept_id=concept_id,
                 concept_name=concept.get("name", "Concept"),
@@ -407,7 +434,7 @@ async def answer_step(
                 source_chunks=chunks,
                 kind="follow_up",
                 existing_stems=[q.get("stem", "") for q in existing_qs],
-                llm=llm,
+                llm=q_llm,
                 discriminating_pair=disc_pair,
             )
             await db.save_question(doc_id, follow_up_q.model_dump())
@@ -448,25 +475,30 @@ async def answer_step(
             f"Generate a clear, friendly explanation using the '{strategy}' strategy."
         )
 
-        try:
-            gen_exp = await llm.generate_structured(
-                prompt=exp_prompt,
-                schema=GeneratedExplanation,
-                tier="main",
-                system="You are an adaptive tutor. Ground explanations in the provided chunks and include exact quotes in source_refs.",
-            )
-            valid_refs = validate_citations(gen_exp.source_refs, chunks_by_id)
-            grounded = len(valid_refs) > 0
-            explanation_model = Explanation(
-                strategy=strategy,
-                title=gen_exp.title,
-                body_markdown=gen_exp.body_markdown,
-                visual=gen_exp.visual or (VisualSpec(type="fraction_bar", params={"fractions": [{"num": 1, "den": 4, "label": "1/4"}, {"num": 1, "den": 8, "label": "1/8"}]}) if "fraction" in concept.get("name", "").lower() else None),
-                source_refs=valid_refs,
-                grounded=grounded,
-            )
-        except Exception as exc:
-            log.warning("Explanation generation failed, using curated fallback: %s", exc)
+        explanation_model = None
+        exp_llm = _safe_llm()
+        if exp_llm:
+            try:
+                gen_exp = await exp_llm.generate_structured(
+                    prompt=exp_prompt,
+                    schema=GeneratedExplanation,
+                    tier="main",
+                    system="You are an adaptive tutor. Ground explanations in the provided chunks and include exact quotes in source_refs.",
+                )
+                valid_refs = validate_citations(gen_exp.source_refs, chunks_by_id)
+                grounded = len(valid_refs) > 0
+                explanation_model = Explanation(
+                    strategy=strategy,
+                    title=gen_exp.title,
+                    body_markdown=gen_exp.body_markdown,
+                    visual=gen_exp.visual or (VisualSpec(type="fraction_bar", params={"fractions": [{"num": 1, "den": 4, "label": "1/4"}, {"num": 1, "den": 8, "label": "1/8"}]}) if "fraction" in concept.get("name", "").lower() else None),
+                    source_refs=valid_refs,
+                    grounded=grounded,
+                )
+            except Exception as exc:
+                log.warning("Explanation generation failed, using curated fallback: %s", exc)
+
+        if not explanation_model:
             explanation_model = Explanation(
                 strategy=strategy,
                 title="Understanding Part Sizes",
@@ -494,6 +526,9 @@ async def answer_step(
         if candidate:
             next_q = Question.model_validate(candidate)
         else:
+            q_llm = _safe_llm()
+            if not q_llm:
+                raise AppError("llm_not_configured", f"The AI model is required to generate fresh {kind_name} question.", status=503)
             next_q = await generate_and_validate_question(
                 concept_id=concept_id,
                 concept_name=concept.get("name", "Concept"),
@@ -502,7 +537,7 @@ async def answer_step(
                 source_chunks=chunks,
                 kind=kind_name,
                 existing_stems=[q.get("stem", "") for q in existing_qs],
-                llm=llm,
+                llm=q_llm,
                 preferred_context_tag=question.context_tag,
             )
             await db.save_question(doc_id, next_q.model_dump())
@@ -579,21 +614,28 @@ async def challenge_hypothesis(
     next_step_id = f"step_{uuid.uuid4().hex[:8]}"
 
     # If student provided a reason for challenging, evaluate it
-    llm = build_llm(settings)
-    if req.freeText:
-        m_map = {m["id"]: m["description"] for m in misconceptions}
-        catalog_str = "\n".join(f"{mid}: {desc}" for mid, desc in m_map.items())
+    def _safe_llm() -> Optional[BaseLLM]:
         try:
-            reading_res = await llm.generate_structured(
-                prompt=f"<CATALOG>\n{catalog_str}\n</CATALOG>\n<STUDENT_EXPLANATION>\n{req.freeText}\n</STUDENT_EXPLANATION>",
-                schema=JustificationReading,
-                tier="fast",
-                system="You evaluate student free-text justifications for misconceptions.",
-            )
-            new_posterior = update_on_justification(new_posterior, reading_res.readings)
-            decision = decide(new_posterior)
+            return build_llm(settings)
         except Exception:
-            pass
+            return None
+
+    if req.freeText:
+        llm = _safe_llm()
+        if llm:
+            m_map = {m["id"]: m["description"] for m in misconceptions}
+            catalog_str = "\n".join(f"{mid}: {desc}" for mid, desc in m_map.items())
+            try:
+                reading_res = await llm.generate_structured(
+                    prompt=f"<CATALOG>\n{catalog_str}\n</CATALOG>\n<STUDENT_EXPLANATION>\n{req.freeText}\n</STUDENT_EXPLANATION>",
+                    schema=JustificationReading,
+                    tier="fast",
+                    system="You evaluate student free-text justifications for misconceptions.",
+                )
+                new_posterior = update_on_justification(new_posterior, reading_res.readings)
+                decision = decide(new_posterior)
+            except Exception:
+                pass
 
     # Provide a reassuring update step
     m_info = next((m for m in misconceptions if m["id"] == decision.top_id), None)

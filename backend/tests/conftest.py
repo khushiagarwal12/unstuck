@@ -18,3 +18,12 @@ def make_client(*, settings=None, llm=None, store=None, signed_in=True, uid="stu
     if signed_in:
         app.dependency_overrides[current_user] = lambda: User(uid=uid)
     return TestClient(app, raise_server_exceptions=False)
+
+
+import pytest
+
+
+@pytest.fixture
+def client() -> TestClient:
+    return make_client()
+

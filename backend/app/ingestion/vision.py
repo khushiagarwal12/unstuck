@@ -26,12 +26,19 @@ async def transcribe_image_page(
     from google import genai
     from google.genai import types
 
-    if not settings.gemini_api_key:
+    if not settings.gemini_api_key and settings.llm_backend != "vertex":
         log.warning("Gemini API key not configured for vision transcription")
         return ExtractedPage(page_number=page_number, text="[Scanned image - text extraction unavailable]", needs_vision=False)
 
     try:
-        client = genai.Client(api_key=settings.gemini_api_key)
+        if settings.llm_backend == "vertex":
+            client = genai.Client(
+                vertexai=True,
+                project=settings.google_cloud_project,
+                location=settings.google_cloud_location,
+            )
+        else:
+            client = genai.Client(api_key=settings.gemini_api_key)
         prompt = (
             "Transcribe all readable study text, equations, and diagrams from this image verbatim. "
             "Return clean text with mathematical notation formatted neatly. "
