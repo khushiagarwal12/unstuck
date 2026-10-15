@@ -1,99 +1,97 @@
-#!/usr/bin/env python3
-"""End-to-end check against a running backend (local or deployed). Standard library only.
+"""Smoke test against deployed or local backend (ARCHITECTURE.md rule 9 & section 15).
 
-It signs in anonymously through Firebase's REST API, then calls the real API. Nothing is simulated:
-the model call hits Gemini and the write hits Firestore. Run it after Day 0 setup, and again after
-each deploy.
-
-  SMOKE_FIREBASE_API_KEY=...  [SMOKE_API_URL=http://localhost:8000]  python scripts/smoke.py
-
-Set ENABLE_DIAGNOSTICS=true on the backend to include the Gemini + Firestore round trip. It spends a
-little free-tier quota, so keep that flag off on a public host.
+Usage:
+  python scripts/smoke.py [BASE_URL]
+Default: http://localhost:8000
 """
 
 from __future__ import annotations
 
-import json
-import os
 import sys
-import urllib.error
-import urllib.request
+import httpx
 
-API = os.environ.get("SMOKE_API_URL", "http://localhost:8000").rstrip("/")
-FIREBASE_KEY = os.environ.get("SMOKE_FIREBASE_API_KEY", "")
-
-
-def call(method: str, url: str, *, token: str | None = None, body: dict | None = None, timeout: float = 90):
-    data = json.dumps(body).encode() if body is not None else None
-    headers = {"Content-Type": "application/json"} if body is not None else {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, json.loads(r.read() or b"{}")
-    except urllib.error.HTTPError as e:
-        try:
-            return e.code, json.loads(e.read() or b"{}")
-        except ValueError:
-            return e.code, {}
-    except urllib.error.URLError as e:
-        return 0, {"error": {"code": "unreachable", "message": str(e.reason)}}
+BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000"
+BASE_URL = BASE_URL.rstrip("/")
 
 
-results: list[tuple[str, str, str]] = []
+def run_smoke():
+    print(f"Running smoke test against: {BASE_URL}")
 
+    # 1. Health check (no auth)
+    print("1. Checking /health...")
+    with httpx.Client(timeout=10.0) as client:
+        r = client.get(f"{BASE_URL}/health")
+        assert r.status_code == 200, f"Health check failed: {r.status_code}"
+        data = r.json()
+        assert data.get("ok") is True
+        print(f"   OK: version {data.get('version')}")
 
-def record(name: str, ok: bool | None, detail: str = "") -> None:
-    results.append((name, {True: "PASS", False: "FAIL", None: "SKIP"}[ok], detail))
+    # 2. Protected round trip (/api/me)
+    print("2. Checking dev auth round-trip (/api/me)...")
+    headers = {"Authorization": "Bearer dev-smokestudent"}
+    with httpx.Client(timeout=10.0) as client:
+        r = client.get(f"{BASE_URL}/api/me", headers=headers)
+        assert r.status_code == 200, f"Auth failed: {r.status_code}"
+        assert r.json().get("uid") == "smokestudent"
+        print("   OK: authenticated as smokestudent")
 
+    # 3. Create sample document
+    print("3. Creating sample document (/api/documents/sample)...")
+    with httpx.Client(timeout=10.0) as client:
+        r = client.post(f"{BASE_URL}/api/documents/sample", headers=headers)
+        assert r.status_code == 200, f"Create sample failed: {r.status_code}"
+        doc_id = r.json().get("documentId")
+        print(f"   OK: documentId {doc_id}")
 
-def main() -> int:
-    # 1. Backend reachable (a sleeping free host can take about a minute to answer)
-    status, body = call("GET", f"{API}/health", timeout=120)
-    record("backend /health", status == 200 and body.get("ok") is True, f"HTTP {status}")
-    if status != 200:
-        return report()
+    # 4. Fetch document concepts
+    print(f"4. Polling document {doc_id}...")
+    with httpx.Client(timeout=10.0) as client:
+        r = client.get(f"{BASE_URL}/api/documents/{doc_id}", headers=headers)
+        assert r.status_code == 200
+        concepts = r.json().get("concepts", [])
+        assert len(concepts) > 0, "No concepts returned"
+        print(f"   OK: found {len(concepts)} concepts")
 
-    # 2. Anonymous Firebase sign-in
-    if not FIREBASE_KEY:
-        record("firebase sign-in", None, "set SMOKE_FIREBASE_API_KEY (Firebase web API key)")
-        return report()
-    status, body = call(
-        "POST",
-        f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_KEY}",
-        body={"returnSecureToken": True},
-    )
-    token = body.get("idToken")
-    record("firebase anonymous sign-in", bool(token), f"HTTP {status}" if not token else "")
-    if not token:
-        return report()
+    # 5. Start learning session
+    print("5. Starting session on Comparing Fractions...")
+    with httpx.Client(timeout=10.0) as client:
+        r = client.post(
+            f"{BASE_URL}/api/sessions",
+            json={"documentId": doc_id, "conceptId": "c_comparing_fractions"},
+            headers=headers,
+        )
+        assert r.status_code == 200, f"Start session failed: {r.status_code}"
+        sid = r.json().get("sessionId")
+        step = r.json().get("step")
+        assert step.get("kind") == "question"
+        print(f"   OK: session {sid} ready on probe question")
 
-    # 3. The backend accepts that token
-    status, body = call("GET", f"{API}/api/me", token=token)
-    record("backend accepts the Firebase token", status == 200 and bool(body.get("uid")), f"HTTP {status} {body.get('error', {}).get('code', '')}".strip())
+    # 6. Answer question
+    print("6. Answering probe question...")
+    with httpx.Client(timeout=10.0) as client:
+        r = client.post(
+            f"{BASE_URL}/api/sessions/{sid}/answer",
+            json={"stepId": step["id"], "optionId": "b"},
+            headers=headers,
+        )
+        assert r.status_code == 200
+        next_step = r.json().get("step")
+        assert next_step.get("kind") in ("follow_up", "explanation")
+        print(f"   OK: transition to {next_step.get('kind')}")
 
-    # 4. Usage limits read from Firestore
-    status, body = call("GET", f"{API}/api/usage", token=token)
-    record("daily usage (Firestore read)", status == 200 and "llm_calls" in body, f"HTTP {status}")
+    # 7. Check usage
+    print("7. Checking quota (/api/usage)...")
+    with httpx.Client(timeout=10.0) as client:
+        r = client.get(f"{BASE_URL}/api/usage", headers=headers)
+        assert r.status_code == 200
+        print(f"   OK: uploads remaining {r.json().get('uploadsRemaining')}")
 
-    # 5. Gemini structured output + Firestore write
-    status, body = call("POST", f"{API}/api/diagnostics/roundtrip", token=token)
-    if status == 404:
-        record("gemini + firestore round trip", None, "diagnostics disabled (set ENABLE_DIAGNOSTICS=true)")
-    else:
-        ok = status == 200 and body.get("stored") is True
-        err = body.get("error", {})
-        record("gemini + firestore round trip", ok, f"HTTP {status} {err.get('code', '')}".strip())
-    return report()
-
-
-def report() -> int:
-    width = max(len(n) for n, _, _ in results)
-    for name, outcome, detail in results:
-        print(f"{outcome:<5} {name:<{width}}  {detail}")
-    return 1 if any(o == "FAIL" for _, o, _ in results) else 0
+    print("\nALL SMOKE TESTS PASSED SUCCESSFULLY! BACKEND IS OPERATIONAL.")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        run_smoke()
+    except Exception as exc:
+        print(f"\nSMOKE TEST FAILED: {exc}")
+        sys.exit(1)

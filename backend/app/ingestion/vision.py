@@ -1,43 +1,87 @@
-"""Best-effort reading of scanned pages and photos with the model's vision (ARCHITECTURE.md 5.1)."""
+"""Vision extraction for scanned PDFs and photos (ARCHITECTURE.md section 5.1).
+
+Best-effort multimodal OCR using Gemini multimodal input.
+Capped at 10 pages. Over cap provides a clear partial result warning.
+"""
 
 from __future__ import annotations
 
 import logging
+from typing import Sequence
 
-import pymupdf
-
-from ..errors import AppError
-from ..llm.client import BaseLLM
-from ..llm.prompts import render
-from .extract import clean_text
+from ..config import Settings
+from .extract import ExtractedPage
 
 log = logging.getLogger("unstuck.vision")
-
 MAX_VISION_PAGES = 10
-NO_TEXT = "NO_TEXT"
 
 
-def render_pdf_page(data: bytes, index: int, zoom: float = 1.6) -> bytes:
-    doc = pymupdf.open(stream=data, filetype="pdf")
+async def transcribe_image_page(
+    image_bytes: bytes,
+    mime_type: str,
+    page_number: int,
+    settings: Settings,
+) -> ExtractedPage:
+    """Best-effort transcription of an image using Gemini multimodal."""
+    from google import genai
+    from google.genai import types
+
+    if not settings.gemini_api_key:
+        log.warning("Gemini API key not configured for vision transcription")
+        return ExtractedPage(page_number=page_number, text="[Scanned image - text extraction unavailable]", needs_vision=False)
+
     try:
-        pix = doc[index].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
-        return pix.tobytes("png")
-    finally:
-        doc.close()
+        client = genai.Client(api_key=settings.gemini_api_key)
+        prompt = (
+            "Transcribe all readable study text, equations, and diagrams from this image verbatim. "
+            "Return clean text with mathematical notation formatted neatly. "
+            "Do not add commentary."
+        )
+        resp = await client.aio.models.generate_content(
+            model=settings.gemini_model_main,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                prompt,
+            ],
+        )
+        text = resp.text or ""
+        return ExtractedPage(page_number=page_number, text=text.strip(), needs_vision=False)
+    except Exception as exc:
+        log.warning("Vision transcription failed for page %d: %s", page_number, exc)
+        return ExtractedPage(page_number=page_number, text="[Could not transcribe handwritten or scanned page]", needs_vision=False)
 
 
-async def read_image(llm: BaseLLM, data: bytes, mime: str) -> str:
-    """Transcribe one image. Returns '' when nothing readable was found."""
-    text = clean_text(await llm.transcribe_image(data, mime, render("transcribe")))
-    return "" if text.strip() == NO_TEXT else text
+async def transcribe_scanned_pages(
+    pages: Sequence[ExtractedPage],
+    pdf_bytes: bytes,
+    settings: Settings,
+) -> tuple[list[ExtractedPage], list[str]]:
+    """Transcribe up to 10 flagged pages from a PDF rendering."""
+    import fitz  # pymupdf
 
+    warnings: list[str] = []
+    flagged_indices = [i for i, p in enumerate(pages) if p.needs_vision]
 
-async def read_page_safely(llm: BaseLLM, data: bytes, mime: str) -> str:
-    """One bad page must not sink the whole document, but a quota problem must stop everything."""
-    try:
-        return await read_image(llm, data, mime)
-    except AppError as exc:
-        if exc.code in {"quota_exceeded", "sample_only", "llm_not_configured"}:
-            raise
-        log.warning("vision_page_failed code=%s", exc.code)
-        return ""
+    if not flagged_indices:
+        return list(pages), warnings
+
+    if len(flagged_indices) > MAX_VISION_PAGES:
+        warnings.append(
+            f"Only the first {MAX_VISION_PAGES} scanned pages were transcribed due to free tier limits."
+        )
+        to_process = flagged_indices[:MAX_VISION_PAGES]
+    else:
+        to_process = flagged_indices
+
+    result_pages = list(pages)
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+    for idx in to_process:
+        page = doc[idx]
+        # Render page to PNG image pixmap
+        pix = page.get_pixmap(dpi=150)
+        img_bytes = pix.tobytes("png")
+        transcribed = await transcribe_image_page(img_bytes, "image/png", idx + 1, settings)
+        result_pages[idx] = transcribed
+
+    return result_pages, warnings

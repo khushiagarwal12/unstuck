@@ -1,14 +1,18 @@
-// Mirrors backend/app/schemas.py. Change both together (ARCHITECTURE.md rule 1).
+// Mirrors backend/app/schemas.py and ARCHITECTURE.md section 7.
 // The client never receives answer keys or option signals: only QuestionPublic.
 
 export type Strategy = "hint" | "simplified" | "worked_example" | "analogy_visual" | "prerequisite_review";
 export type MasteryStatus = "not_assessed" | "developing" | "demonstrated";
 
-export interface SourceRef { chunk_id: string; page: number; quote: string }
+export interface SourceRef {
+  chunk_id: string;
+  page: number;
+  quote: string;
+}
 
 export interface VisualSpec {
   type: "fraction_bar" | "number_line" | "area_model" | "none";
-  params: Record<string, unknown>;
+  params: Record<string, any>;
 }
 
 export interface QuestionPublic {
@@ -46,29 +50,94 @@ export interface Step {
   note?: string | null;
 }
 
-export interface HealthResponse { ok: boolean; version: string }
-
-export interface ApiErrorBody { error: { code: string; message: string; retryable: boolean } }
-
-export type DocumentStatus = "queued" | "reading" | "indexing" | "finding_concepts" | "concepts_ready" | "failed";
-
-export interface ConceptCard {
+export interface Concept {
   id: string;
+  conceptId?: string;
   name: string;
   description: string;
-  prerequisites: string[]; // concept ids
-  pages: number[];
+  prerequisites: string[];
+  sourceRefs: SourceRef[];
+  catalogStatus?: string;
 }
 
-export interface DocumentView {
+export interface DocumentInfo {
   id: string;
-  title: string;
-  status: DocumentStatus;
-  progress: number; // 0-100
+  status: "queued" | "extracting" | "vision" | "chunking" | "embedding" | "concepts_ready" | "ready" | "error";
+  progress: number;
   statusDetail: string;
   pageCount: number;
-  warnings: string[];
-  error: { code: string; message: string } | null;
+  fileName: string;
   isSample: boolean;
-  concepts?: ConceptCard[];
+  warnings: string[];
+  concepts: Concept[];
+}
+
+export interface SessionSummary {
+  sessionId: string;
+  conceptName: string;
+  statusBefore: MasteryStatus;
+  statusAfter: MasteryStatus;
+  triedStrategies: Strategy[];
+  cycleCount: number;
+  activeHypothesis?: Hypothesis | null;
+  attemptCount: number;
+  sourceRefs: SourceRef[];
+}
+
+export interface ProgressData {
+  concepts: {
+    conceptId: string;
+    conceptName: string;
+    status: MasteryStatus;
+    evidenceCount: number;
+    lastAssessedAt: string;
+  }[];
+  recurringErrors: {
+    id: string;
+    label: string;
+    count: number;
+  }[];
+  recentSessions: {
+    id: string;
+    conceptName: string;
+    statusBefore: MasteryStatus;
+    statusAfter: MasteryStatus;
+    startedAt: string;
+    completedAt?: string;
+  }[];
+}
+
+export interface CoursePlanItem {
+  conceptId: string;
+  name: string;
+  description: string;
+  order: number;
+  type: "confirm" | "learn";
+  masteryStatus: MasteryStatus;
+}
+
+export interface CourseData {
+  courseId: string;
+  documentId: string;
+  topic: string;
+  status: "placement" | "ready";
+  plan: CoursePlanItem[];
+  placementQuestion?: QuestionPublic | null;
+}
+
+export interface UsageData {
+  date: string;
+  uploadsRemaining: number;
+  uploadsMax: number;
+  llmCallsRemaining: number;
+  llmCallsMax: number;
+}
+
+export interface HealthResponse {
+  ok: boolean;
+  version: string;
+}
+
+export interface ApiErrorBody {
+  error: { code: string; message: string; retryable: boolean };
 }

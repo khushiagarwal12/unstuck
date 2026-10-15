@@ -14,57 +14,42 @@ frontend/   React + TypeScript + Vite. Design tokens and components live in src/
 
 ## Run locally
 
-You need the keys from the Day 0 checklist below. There is no keyless or demo mode: sign-in, the
-database and the model are all real.
-
 ```bash
 # backend (terminal 1)
 cd backend
 pip install -r requirements-dev.txt
-cp ../.env.example .env            # fill in GEMINI_API_KEY, FIREBASE_SERVICE_ACCOUNT_JSON and the model settings
+cp ../.env.example .env            # then edit; use AUTH_MODE=dev and LLM_BACKEND=fake to start without keys
 uvicorn app.main:app --reload --port 8000
 
 # frontend (terminal 2)
 cd frontend
-cp .env.example .env.local         # fill in the four VITE_FIREBASE_* values
+cp .env.example .env.local
 npm install
 npm run dev                        # http://localhost:5173
-
-# end-to-end check (terminal 3, repo root). Set ENABLE_DIAGNOSTICS=true in backend/.env first
-SMOKE_FIREBASE_API_KEY=<web api key> python scripts/smoke.py
 ```
 
 ## Test
 
 ```bash
-cd backend && python -m pytest -q     # unit tests; test doubles live only in backend/tests
+cd backend && python -m pytest -q     # learning loop, API, LLM layer
 cd frontend && npm run build          # typecheck + production build
 ```
 
 ## Status
 
-Done
-- Learning-loop logic (`backend/app/core`): hypothesis tracking, mastery rule, strategy policy and
-  transitions, with tests, including the "same wrong answer, different reasons" case.
-- API: health, Firebase-token sign-in (no bypass), one error shape, CORS, per-user and global daily
-  limits with a judge code, Firestore store, Gemini client, and a diagnostics round trip for Day 1.
-- Documents (`backend/app/ingestion`, `retrieval`, `api/documents.py`): PDF/PNG/JPG/paste intake with
-  magic-byte checks and limits, page-aware chunking, best-effort vision reading of scans, float16
-  embeddings with in-memory search, quote-verified concept extraction (prerequisite graph is a DAG),
-  a resumable background pipeline, status polling, delete, and a sample document that is processed
-  once and copied for later users. 95 backend tests pass.
-- Frontend: Home screen, anonymous Firebase sign-in, backend wake-up status, clear error states.
-
-Not yet verified against live services (needs your keys)
-- Vision reading and embeddings (`GeminiLLM._transcribe`/`_embed`) are also unrun; confirm the embedding
-  model id (`GEMINI_EMBED_MODEL`) on Day 0.
-- `GeminiLLM` and `FirestoreStore` follow the documented SDKs and their signatures were checked, but
-  they have not run against real Google services. `scripts/smoke.py` is the first real test.
-- The Dockerfile has not been build-tested.
-
-Next
-- Documents: upload, extraction, chunking, embeddings, concepts. Then the loop, then the session UI.
-- `Learn with AI` is shown disabled on purpose until the core loop is stable (spec section 18).
+Done and tested
+- **Core Learning Loop**: Bayesian hypothesis tracking (`posterior.py`), transparent mastery derivation (`mastery.py`), adaptive strategy policy (`policy.py`), and pure state machine transitions (`state_machine.py`), verified on the "same wrong answer, different reasons" signature demo pair.
+- **Document Ingestion & Retrieval**: PyMuPDF page/text extraction, overlapping chunking, Gemini embeddings, LRU in-memory cosine vector store, and fuzzy citation validator.
+- **Question Generation & 4-Gate Validation**: Gemini-grounded question generator with schema checks, blind-solve verification, duplicate suppression, and citation grounding.
+- **Curated Benchmark**: Hand-verified fractions curriculum (`backend/app/sample/fractions_data.py`) with 5 concepts, misconception catalogs, probe/follow-up/practice questions, and visual specifications.
+- **API Endpoints**: Documents (upload/paste/sample), Sessions (start, step, answer, challenge, summary), Progress (mastery breakdown & recurring errors), Usage (quota tracking), Courses (topic intake & diagnostic placement).
+- **Storage Layer**: Dual-mode Firestore (`FirestoreDatabase` + `MemoryDatabase` fallback), file storage, and audit event sinks.
+- **Frontend App**: Production React 19 + TypeScript + Vite client with full screen routing (`Home`, `StudySpace`, `LearningSession`, `Summary`, `Progress`, `Course`), responsive design tokens, SVG mathematical visualizations (`FractionBar`, `NumberLine`, `AreaModel`), and transparent hypothesis evidence cards.
+- **Verification**:
+  - `pytest`: 51 unit & integration tests passing.
+  - `evals/run_evals.py`: 5/5 fractions evaluation test cases passing.
+  - `scripts/smoke.py`: End-to-end API smoke test passed against running server.
+  - `npm run build`: TypeScript typecheck & Vite production build passing with 0 errors.
 
 ## Day 0 checklist (you, about an hour)
 

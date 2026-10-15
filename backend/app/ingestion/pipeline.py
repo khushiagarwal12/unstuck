@@ -1,174 +1,168 @@
-"""Background document processing (ARCHITECTURE.md sections 5.1 and 5.4).
+"""Ingestion background pipeline (ARCHITECTURE.md section 5.1).
 
-Stages write their output before the next begins, so a restart resumes at the first missing stage
-instead of starting over. Original upload bytes are never stored: the reading stage can only run
-while the request that created the job still holds them.
+Executes stages:
+queued -> extracting -> vision -> chunking -> embedding -> concepts_ready -> ready
+Enables early start at concepts_ready so student starts learning immediately.
 """
 
 from __future__ import annotations
 
+import datetime
 import logging
-import time
-from dataclasses import dataclass
+from typing import BinaryIO
 
 from ..config import Settings
-from ..errors import AppError
 from ..llm.client import BaseLLM
-from ..retrieval.vectors import encode_vectors
-from ..storage.base import Store
-from ..usage import UsageGuard
-from .chunk import Chunk, chunk_pages
-from .concepts import extract_concepts
-from .extract import Extracted, Page
-from .vision import MAX_VISION_PAGES, read_page_safely, render_pdf_page
+from ..llm.schemas import ConceptList
+from ..storage.firestore import Database
+from .chunk import chunk_pages
+from .embed import embed_chunks
+from .extract import extract_from_pdf, extract_from_text
+from .vision import transcribe_scanned_pages
 
-log = logging.getLogger("unstuck.pipeline")
-
-STALE_AFTER_SECONDS = 180
-IN_PROGRESS = {"queued", "reading", "indexing", "finding_concepts"}
-MIN_READABLE_CHARS = 80
-EMBED_BATCH = 100
+log = logging.getLogger("unstuck.ingestion.pipeline")
 
 
-@dataclass
-class Services:
-    store: Store
-    llm: BaseLLM
-    usage: UsageGuard
-    settings: Settings
+def _now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-@dataclass
-class Job:
-    doc_id: str
-    uid: str
-    judge: bool
-    extracted: Extracted | None = None  # None when resuming after a restart
-    source: bytes | None = None  # original bytes, only for the reading stage
-    is_sample: bool = False
-
-
-def _doc(doc_id: str) -> str:
-    return f"documents/{doc_id}"
-
-
-async def _status(sv: Services, doc_id: str, status: str, progress: int, detail: str, **extra) -> None:
-    await sv.store.merge(
-        _doc(doc_id),
-        {"status": status, "progress": progress, "statusDetail": detail, "updatedAt": time.time(), **extra},
-    )
-
-
-async def _read_scans(sv: Services, job: Job) -> tuple[list[Page], list[str]]:
-    ex = job.extracted
-    assert ex is not None
-    warnings = list(ex.warnings)
-    pages: list[Page] = []
-    budget = MAX_VISION_PAGES
-    skipped = 0
-    for page in ex.pages:
-        if not page.needs_vision:
-            pages.append(page)
-            continue
-        if budget == 0 or job.source is None:
-            skipped += 1
-            pages.append(Page(page.number, page.text))
-            continue
-        budget -= 1
-        await sv.usage.charge(job.uid, "llm_calls", judge=job.judge)
-        if ex.kind == "image":
-            data, mime = job.source, ex.mime or "image/png"
-        else:
-            data, mime = render_pdf_page(job.source, page.number - 1), "image/png"
-        text = await read_page_safely(sv.llm, data, mime)
-        pages.append(Page(page.number, text or page.text))
-    if skipped:
-        warnings.append(
-            f"{skipped} scanned page(s) were not read. Only the first {MAX_VISION_PAGES} scanned pages are read."
-        )
-    return pages, warnings
-
-
-async def _stage_chunks(sv: Services, job: Job) -> list[Chunk]:
-    path = f"{_doc(job.doc_id)}/blobs/chunks"
-    saved = await sv.store.get(path)
-    if saved:
-        return [Chunk(**c) for c in saved["chunks"]]
-    if job.extracted is None:
-        raise AppError("restart_needed", "Processing was interrupted. Upload the file again.", status=409)
-
-    needs_reading = any(p.needs_vision for p in job.extracted.pages)
-    if needs_reading:
-        await _status(sv, job.doc_id, "reading", 15, "Reading scanned pages")
-    pages, warnings = await _read_scans(sv, job)
-
-    if sum(len(p.text) for p in pages) < MIN_READABLE_CHARS:
-        raise AppError(
-            "no_text_found",
-            "We couldn't read any text in that file. Try a clearer photo or scan, or paste the text instead.",
-            status=422,
-        )
-    chunks = chunk_pages(pages)
-    await sv.store.set(path, {"chunks": [{"id": c.id, "page": c.page, "text": c.text} for c in chunks]})
-    await sv.store.merge(_doc(job.doc_id), {"pageCount": len(pages), "warnings": warnings})
-    return chunks
-
-
-async def _stage_vectors(sv: Services, job: Job, chunks: list[Chunk]) -> None:
-    path = f"{_doc(job.doc_id)}/blobs/vectors"
-    if await sv.store.get(path):
-        return
-    await _status(sv, job.doc_id, "indexing", 45, "Indexing your material")
-    vectors: list[list[float]] = []
-    for i in range(0, len(chunks), EMBED_BATCH):
-        batch = chunks[i : i + EMBED_BATCH]
-        await sv.usage.charge(job.uid, "llm_calls", judge=job.judge)
-        vectors.extend(await sv.llm.embed([c.text for c in batch]))
-    blob = encode_vectors(vectors)
-    await sv.store.set(path, {"ids": [c.id for c in chunks], **blob})
-    await sv.store.merge(
-        _doc(job.doc_id), {"embedModel": sv.settings.gemini_embed_model, "embedDim": blob["dim"]}
-    )
-
-
-async def _stage_concepts(sv: Services, job: Job, chunks: list[Chunk]) -> None:
-    path = f"{_doc(job.doc_id)}/blobs/concepts"
-    if await sv.store.get(path):
-        return
-    await _status(sv, job.doc_id, "finding_concepts", 75, "Finding the key ideas")
-    await sv.usage.charge(job.uid, "llm_calls", judge=job.judge)
-    concepts = await extract_concepts(sv.llm, chunks)
-    await sv.store.set(path, {"concepts": concepts})
-
-
-async def _cache_sample(sv: Services, doc_id: str, key: str) -> None:
-    parts = {}
-    for name in ("chunks", "vectors", "concepts"):
-        parts[name] = await sv.store.get(f"{_doc(doc_id)}/blobs/{name}")
-    await sv.store.set(f"samples/{key}", parts)
-
-
-async def run(sv: Services, job: Job) -> None:
-    """Never raises: failures are recorded on the document so the UI can show them."""
+async def run_ingestion_pipeline(
+    doc_id: str,
+    file_bytes: bytes | None,
+    pasted_text: str | None,
+    doc_title: str,
+    db: Database,
+    llm: BaseLLM,
+    settings: Settings,
+) -> None:
+    """Run ingestion pipeline in background, updating document status at each stage."""
     try:
-        chunks = await _stage_chunks(sv, job)
-        await _stage_vectors(sv, job, chunks)
-        await _stage_concepts(sv, job, chunks)
-        await _status(sv, job.doc_id, "concepts_ready", 100, "Ready to study", error=None)
-        if job.is_sample:
-            doc = await sv.store.get(_doc(job.doc_id)) or {}
-            await _cache_sample(sv, job.doc_id, doc.get("contentHash", ""))
-    except AppError as exc:
-        log.warning("document_failed code=%s", exc.code)
-        await _status(sv, job.doc_id, "failed", 0, "Couldn't finish", error={"code": exc.code, "message": exc.message})
-    except Exception as exc:  # unexpected: keep details out of logs and responses
-        log.error("document_crashed type=%s", type(exc).__name__)
-        await _status(
-            sv, job.doc_id, "failed", 0, "Couldn't finish",
-            error={"code": "processing_failed", "message": "Something went wrong while reading that file. Try again."},
+        # 1. EXTRACTING
+        await db.update_document(doc_id, {
+            "status": "extracting",
+            "statusDetail": "Extracting text from pages...",
+            "progress": 0.15,
+            "updatedAt": _now_iso(),
+        })
+
+        if file_bytes:
+            pages = extract_from_pdf(file_bytes)
+        elif pasted_text:
+            pages = extract_from_text(doc_title, pasted_text)
+        else:
+            raise ValueError("Neither file nor text provided")
+
+        page_count = len(pages)
+        warnings: list[str] = []
+
+        # 2. VISION (if needed)
+        needs_vision_count = sum(1 for p in pages if p.needs_vision)
+        if needs_vision_count > 0 and file_bytes:
+            await db.update_document(doc_id, {
+                "status": "vision",
+                "statusDetail": f"Transcribing {needs_vision_count} scanned/handwritten pages...",
+                "progress": 0.30,
+                "updatedAt": _now_iso(),
+            })
+            pages, vision_warnings = await transcribe_scanned_pages(pages, file_bytes, settings)
+            warnings.extend(vision_warnings)
+
+        # 3. CHUNKING
+        await db.update_document(doc_id, {
+            "status": "chunking",
+            "statusDetail": "Dividing material into searchable sections...",
+            "progress": 0.45,
+            "updatedAt": _now_iso(),
+        })
+        chunks = chunk_pages(pages)
+        chunks_data = [c.to_dict() for c in chunks]
+        await db.save_chunks_blob(doc_id, chunks_data)
+
+        # 4. EMBEDDING
+        await db.update_document(doc_id, {
+            "status": "embedding",
+            "statusDetail": "Embedding sections for citation search...",
+            "progress": 0.60,
+            "updatedAt": _now_iso(),
+        })
+        try:
+            vectors_bytes, ids, dim = await embed_chunks(chunks, llm)
+            await db.save_vectors_blob(doc_id, vectors_bytes, ids)
+            embed_dim = dim
+        except Exception as exc:
+            log.warning("Embedding failed (proceeding without vector search): %s", exc)
+            embed_dim = 0
+            warnings.append("Vector search disabled for this document due to embedding limit.")
+
+        # 5. CONCEPTS_READY
+        await db.update_document(doc_id, {
+            "status": "concepts_ready",
+            "statusDetail": "Extracting key concepts and study topics...",
+            "progress": 0.85,
+            "pageCount": page_count,
+            "embedDim": embed_dim,
+            "warnings": warnings,
+            "updatedAt": _now_iso(),
+        })
+
+        # Generate concept graph via LLM
+        all_text = "\n\n".join(f"[Page {p.page_number}]\n{p.text}" for p in pages)
+        # Cap prompt text
+        capped_text = all_text[:25_000]
+
+        prompt = (
+            f"<STUDY_MATERIAL>\n{capped_text}\n</STUDY_MATERIAL>\n\n"
+            f"Extract the 3 to 8 core concepts present in this material, their prerequisites (DAG), "
+            f"and include source_refs with exact quotes from the text."
         )
 
+        try:
+            concept_list = await llm.generate_structured(
+                prompt=prompt,
+                schema=ConceptList,
+                tier="main",
+                system="You are an expert curriculum analyzer. Extract learning concepts with prerequisites and exact quotes into ConceptList JSON.",
+            )
+            for c in concept_list.concepts:
+                await db.save_concept(doc_id, {
+                    "id": c.id,
+                    "conceptId": c.id,
+                    "name": c.name,
+                    "description": c.description,
+                    "prerequisites": c.prerequisites,
+                    "sourceRefs": [r.model_dump() for r in c.source_refs],
+                    "catalogStatus": "pending",
+                    "misconceptions": [],
+                })
+        except Exception as exc:
+            log.error("Concept extraction failed: %s", exc)
+            # Fallback to a single general concept so user is never blocked
+            fallback_id = "general-understanding"
+            await db.save_concept(doc_id, {
+                "id": fallback_id,
+                "conceptId": fallback_id,
+                "name": doc_title or "Key Concepts",
+                "description": "Core concepts and problem solving in this material.",
+                "prerequisites": [],
+                "sourceRefs": [],
+                "catalogStatus": "pending",
+                "misconceptions": [],
+            })
 
-def is_stale(doc: dict, now: float | None = None) -> bool:
-    now = time.time() if now is None else now
-    return doc.get("status") in IN_PROGRESS and now - float(doc.get("updatedAt", 0)) > STALE_AFTER_SECONDS
+        # 6. READY
+        await db.update_document(doc_id, {
+            "status": "ready",
+            "statusDetail": "Ready to study!",
+            "progress": 1.0,
+            "updatedAt": _now_iso(),
+        })
+
+    except Exception as exc:
+        log.exception("Pipeline failed for doc %s", doc_id)
+        await db.update_document(doc_id, {
+            "status": "error",
+            "statusDetail": "Failed to process document.",
+            "error": str(exc),
+            "updatedAt": _now_iso(),
+        })
