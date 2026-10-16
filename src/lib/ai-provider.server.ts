@@ -1,3 +1,4 @@
+import { accessToken, type Env } from "./google-auth.server";
 import type { Generate } from "./tutor-core";
 
 const TIMEOUT_MS = 45_000;
@@ -12,33 +13,72 @@ function friendly(status: number): ProviderError {
 }
 
 /** Google Gemini through the Generative Language API (Google AI Studio key). */
+function requestBody({ system, prompt, temperature, image }: Parameters<Generate>[0]) {
+  const parts: object[] = [{ text: prompt }];
+  if (image) parts.push({ inlineData: { mimeType: image.mimeType, data: image.data } });
+  return {
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{ role: "user", parts }],
+    generationConfig: { responseMimeType: "application/json", temperature },
+  };
+}
+
+function readText(data: { candidates?: { content?: { parts?: { text?: string }[] } }[] }): string {
+  const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+  if (!text) throw new ProviderError("The AI returned an empty answer. Try again.");
+  return text;
+}
+
 export function geminiGenerate(apiKey: string, env: Record<string, string | undefined>): Generate {
   const models = {
     main: env["GEMINI_MODEL_MAIN"] || "gemini-2.5-flash",
     fast: env["GEMINI_MODEL_FAST"] || "gemini-2.5-flash-lite",
   };
-  return async ({ system, prompt, tier, temperature }) => {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${models[tier]}:generateContent`, {
+  return async (req) => {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${models[req.tier]}:generateContent`, {
       method: "POST",
       headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
       signal: AbortSignal.timeout(TIMEOUT_MS),
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: system }] },
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: "application/json", temperature },
-      }),
+      body: JSON.stringify(requestBody(req)),
     });
     if (!res.ok) throw friendly(res.status);
-    const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
-    const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
-    if (!text) throw new ProviderError("The AI returned an empty answer. Try again.");
-    return text;
+    return readText((await res.json()) as Parameters<typeof readText>[0]);
+  };
+}
+
+/** Gemini on Google Cloud Vertex AI. Bills the Google Cloud project, so trial credits apply. */
+export function vertexGenerate(env: Env, token: () => Promise<string> = () => accessToken(env)): Generate {
+  const project = env["GOOGLE_CLOUD_PROJECT"];
+  if (!project) throw new ProviderError("Vertex AI needs GOOGLE_CLOUD_PROJECT.");
+  const location = env["GOOGLE_CLOUD_LOCATION"] || "us-central1";
+  const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
+  const models = {
+    main: env["GEMINI_MODEL_MAIN"] || "gemini-2.5-flash",
+    fast: env["GEMINI_MODEL_FAST"] || "gemini-2.5-flash-lite",
+  };
+  return async (req) => {
+    let bearer: string;
+    try {
+      bearer = await token();
+    } catch {
+      throw new ProviderError("The AI service rejected our credentials.");
+    }
+    const url = `https://${host}/v1/projects/${project}/locations/${location}/publishers/google/models/${models[req.tier]}:generateContent`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+      body: JSON.stringify(requestBody(req)),
+    });
+    if (!res.ok) throw friendly(res.status);
+    return readText((await res.json()) as Parameters<typeof readText>[0]);
   };
 }
 
 /** Lovable AI gateway, used only when no Gemini key is configured. */
 export function lovableGenerate(key: string): Generate {
-  return async ({ system, prompt }) => {
+  return async ({ system, prompt, image }) => {
+    if (image) throw new ProviderError("Reading photos needs Google Gemini. Add GEMINI_API_KEY in the project secrets.");
     const res = await fetch("https://ai.gateway.lovable.dev/v1/responses", {
       method: "POST",
       signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -99,10 +139,17 @@ export function lovableGenerate(key: string): Generate {
   };
 }
 
-export function pickProvider(env: Record<string, string | undefined>): Generate {
+/** Vertex AI when LLM_BACKEND=vertex, else a Gemini API key, else the Lovable gateway as a last resort. */
+export function pickProvider(env: Env): Generate {
+  if (env["LLM_BACKEND"] === "vertex") return vertexGenerate(env);
   const gemini = env["GEMINI_API_KEY"];
   if (gemini) return geminiGenerate(gemini, env);
   const lovable = env["LOVABLE_API_KEY"];
   if (lovable) return lovableGenerate(lovable);
   throw new ProviderError("AI is not configured. Add GEMINI_API_KEY in the project secrets.");
+}
+
+/** True when the configured provider can read images (Gemini or Vertex AI). */
+export function supportsVision(env: Env): boolean {
+  return env["LLM_BACKEND"] === "vertex" || !!env["GEMINI_API_KEY"];
 }

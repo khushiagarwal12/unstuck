@@ -1,5 +1,8 @@
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState } from "react";
+import { LessonTools, type Caps } from "@/components/LessonTools";
+import { getCapabilities, readProblem } from "@/lib/google.functions";
+import { shrinkImage } from "@/lib/image";
 import { askTutor } from "@/lib/tutor.functions";
 
 type Option = { text: string; misconception: string | null };
@@ -37,6 +40,12 @@ const STAGES: { id: Stage; label: string }[] = [
 
 export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initialTopic?: string; prefs?: Record<string, unknown>; onRecord?: (r: SessionRecord) => void; onExit?: () => void }) {
   const ask = useServerFn(askTutor);
+  const readPhoto = useServerFn(readProblem);
+  const loadCaps = useServerFn(getCapabilities);
+  const [caps, setCaps] = useState<Caps>({ vision: false, speech: false, translate: false, video: false });
+  const [reading, setReading] = useState(false);
+  const [photoErr, setPhotoErr] = useState<string | null>(null);
+  useEffect(() => { loadCaps().then(setCaps).catch(() => undefined); }, [loadCaps]);
   const [stage, setStage] = useState<Stage>("start");
   const [topic, setTopic] = useState("");
   const [notes, setNotes] = useState("");
@@ -76,6 +85,16 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initia
     setTopic(t);
     reset(false);
     call<Diag>("Preparing a quick check…", "start", { stuckOn: t, learnerPreferences: prefs, notes: notes.slice(0, 6000) || undefined }, (r) => { setDiag(r); setStage("diagnostic"); });
+  };
+
+  const snap = async (file: File | undefined) => {
+    if (!file) return;
+    setReading(true); setPhotoErr(null);
+    try {
+      const { text } = await readPhoto({ data: await shrinkImage(file) });
+      setTopic((t) => (t.trim() ? `${t.trim()}\n${text}` : text));
+    } catch (e) { setPhotoErr(e instanceof Error ? e.message : "We couldn't read that photo."); }
+    finally { setReading(false); }
   };
 
   const reset = (full = true) => {
@@ -145,6 +164,16 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initia
               <form className="card-paper mt-6 p-5" onSubmit={(e) => { e.preventDefault(); if (topic.trim()) start(); }}>
                 <label htmlFor="topic" className="text-sm font-medium">What are you stuck on?</label>
                 <textarea id="topic" value={topic} onChange={(e) => setTopic(e.target.value)} rows={3} placeholder="Paste a question, a concept, or a mistake you keep making…" className="mt-2 w-full resize-none rounded-lg border bg-background p-3 outline-none focus:ring-2 focus:ring-ring" />
+                {caps.vision && (
+                  <div className="mt-3 text-sm">
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 hover:bg-secondary">
+                      <input type="file" accept="image/*" capture="environment" className="sr-only" disabled={reading || !!loading} onChange={(e) => { void snap(e.target.files?.[0]); e.target.value = ""; }} />
+                      {reading ? "Reading your photo…" : "Snap or upload the problem"}
+                    </label>
+                    <span className="ml-2 text-xs text-muted-foreground">Read by Google Gemini. You can edit the text before you continue.</span>
+                    {photoErr && <p role="alert" className="mt-2 text-destructive">{photoErr}</p>}
+                  </div>
+                )}
                 <details className="mt-3 text-sm">
                   <summary className="cursor-pointer text-muted-foreground">Add your notes (optional)</summary>
                   <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} placeholder="Paste class notes or a worksheet…" className="mt-2 w-full rounded-lg border bg-background p-3 outline-none focus:ring-2 focus:ring-ring" />
@@ -197,6 +226,7 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initia
               <p className="mt-3 whitespace-pre-line leading-relaxed">{lesson.body}</p>
               {lesson.diagram && <pre className="mt-4 overflow-x-auto rounded-lg bg-secondary p-4 font-mono text-sm">{lesson.diagram}</pre>}
               {lesson.steps?.length > 0 && <ol className="mt-4 list-decimal space-y-2 pl-5">{lesson.steps.map((s, i) => <li key={i}>{s}</li>)}</ol>}
+              <LessonTools lesson={lesson} concept={diag?.concept ?? topic} caps={caps} />
               <div className="mt-8 border-t pt-5">
                 <Primary disabled={!!loading} onClick={() => getTransfer()}>I think I get it — test me</Primary>
                 <p className="mt-5 text-sm font-medium">Still fuzzy? Teach me another way:</p>

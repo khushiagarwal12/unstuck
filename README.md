@@ -16,15 +16,20 @@ note built from their real history.
   independent solve agrees with it. Failures show a retryable error; there is no canned content.
 
 ## Google technology
-Google Gemini (Generative Language API) writes questions, diagnoses, explanations, courses and coaching notes.
-Google sign-in identifies learners.
-
-## Configuration (project secrets, never committed)
-| Name | Purpose |
+| Product | Used for |
 |---|---|
-| `GEMINI_API_KEY` | Google AI Studio key. Primary AI provider. |
-| `GEMINI_MODEL_MAIN` / `GEMINI_MODEL_FAST` | Optional model ids (defaults `gemini-2.5-flash` / `gemini-2.5-flash-lite`). |
-| `LOVABLE_API_KEY` | Fallback gateway, used only if no Gemini key is set. |
+| Gemini (Gemini API or Vertex AI) | Questions, diagnosis, explanations, personal courses, the coaching note, and an independent check of every answer key |
+| Gemini vision | "Snap the problem": read a photo of a question, worksheet or notes |
+| Cloud Text-to-Speech | "Listen": read a lesson aloud in 9 languages |
+| Cloud Translation | "Translate": show a lesson in Hindi, Bengali, Tamil, Telugu, Marathi, Gujarati, Kannada or Malayalam |
+| YouTube Data API | "Watch a short video": one safe, embeddable video for the concept |
+| Google sign-in | Accounts, so progress is saved |
+| Cloud Run (optional) | Hosting through the included `Dockerfile` |
+
+Setup steps are in [docs/GOOGLE_SETUP.md](docs/GOOGLE_SETUP.md).
+
+## Configuration (secrets, never committed)
+See [.env.example](.env.example). Optional features hide themselves when their credentials are missing.
 
 ## Tests
 `npx vitest run` covers answer-key verification, output validation, the follow-up limit, course ordering, the rate

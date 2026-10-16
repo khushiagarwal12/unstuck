@@ -2,7 +2,14 @@ import { promptFor, solvePrompt, SYSTEM } from "./tutor-prompts";
 import { type Action, extractJson, normalize, schemas, solveSchema } from "./tutor-schemas";
 
 export type Tier = "main" | "fast";
-export type Generate = (req: { system: string; prompt: string; tier: Tier; temperature: number }) => Promise<string>;
+export type ImageInput = { mimeType: string; data: string }; // data is base64
+export type Generate = (req: {
+  system: string;
+  prompt: string;
+  tier: Tier;
+  temperature: number;
+  image?: ImageInput;
+}) => Promise<string>;
 
 export class TutorError extends Error {}
 
