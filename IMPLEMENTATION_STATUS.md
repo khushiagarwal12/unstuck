@@ -3,7 +3,7 @@
 Update date: 2026-10-16. Worktree branch: `khushiagarwal12-unstuck-auth-diagnostics`.
 The earlier authentication, course-generation, and assessment phases are on this branch; see their commit history
 for push status. The learning-helper phase is committed and pushed in `0f01076`. The learner-dashboard phase below
-is uncommitted and has not been deployed or pushed.
+is committed and pushed in `01461a2`; neither phase has been deployed.
 
 ## Current phase: learner dashboard, profile and continuity
 
@@ -62,7 +62,7 @@ added.
 - Guest state remains device/browser-local until sign-in imports completed attempts; guest courses and preferences
   are not persisted as account data. Resetting a structured course creates a separate copy rather than deleting
   historical attempts. Individual concept deletion removes the concept summary, not course assessment records.
-- No deployment, commit, or push was performed for this phase.
+- No deployment was performed. The phase was committed and pushed in `01461a2`.
 
 ## Current phase: persistent contextual AI learning helper
 
