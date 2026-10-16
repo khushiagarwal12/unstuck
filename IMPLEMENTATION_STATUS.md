@@ -1,15 +1,78 @@
 # UNSTUCK: current implementation status
 
 Update date: 2026-10-16. Worktree branch: `khushiagarwal12-unstuck-auth-diagnostics`.
-Scope: authentication/user continuity and diagnostic-learning changes. No deployment, push, commit, billing change,
-or provider migration was performed. The historical audit below describes the earlier baseline and is not a report
-of this worktree's validation.
+The earlier authentication, course-generation, and assessment phases are on this branch; see their commit history
+for push status. The current learning-helper phase is uncommitted and has not been deployed or pushed.
+
+## Current phase: persistent contextual AI learning helper
+
+The helper is implemented in the current worktree, reusing the existing tutor server function and configured AI
+provider. It adds no database, provider, or dependency. Conversation history is stored in browser local storage;
+no server-side transcript is retained.
+
+### Behavior implemented
+
+- A collapsible helper is available inside diagnostic/practice sessions, course lessons, and each phase-assignment
+  question. The current topic, course goal, phase, lesson material, learner answer, and (after submission) visible
+  assessment feedback are passed automatically, so learners do not need to restate context.
+- Quick request modes include simpler explanation, worked example, hint, analogy, flowchart, bar chart, comparison
+  table, a different method, incorrect-answer explanation, and prerequisite review. Mode-specific Zod structures
+  enforce actual worked-example, sequential-flowchart, chart, and table data instead of accepting diagram syntax.
+- Flowcharts render as responsive visual nodes/connectors with text alternatives. Bar charts render as responsive
+  SVG with labels, caption and a screen-reader data alternative; only explicit `label: value` rows in supplied
+  material can be charted, and every plotted label/value must match that source. With no labeled data, chart mode
+  must return an explanatory text fallback. Tables render as accessible, horizontally scrollable tables.
+  A render error falls back to the textual explanation.
+- During a diagnostic, transfer check, or unanswered course-assessment item/follow-up, the server accepts hint mode
+  only. A hint is constrained to short text and is prompted to provide one next-step clue rather than a solution.
+  Answer keys/rubrics are omitted while an assessment item is active; after an attempt, visible graded feedback can
+  be used to explain an incorrect answer. Successful course-assessment hint requests are counted once per item in
+  the persisted attempt's hint-use count. Course hint use is saved locally per learner/course and restored after
+  refresh; existing explicit assignment hints are tracked the same way.
+- A different-method response must name a method distinct from the current method. The last 12 chat messages
+  (up to 6 exchanges) are saved per learner/session/course/phase/question key and the last 6 messages are supplied
+  as conversational context.
+- `src/test/learning-helper.test.ts` checks that format requests return actual structured representations, charts
+  use only labeled source values or fall back to text, active assessments stay hint-only, and a claimed different
+  method is rejected when it repeats the current method.
+
+### Files changed in this phase
+
+- `src/components/LearningHelper.tsx` (new): persistent collapsible helper UI, local history, actual visual
+  renderers, mobile layout and visual error fallback.
+- `src/components/LearnSession.tsx`: injects session, lesson and active diagnostic/transfer context; hint requests
+  mark the session supported rather than clean.
+- `src/routes/index.tsx`: adds context-aware helper instances to course lessons and assignments, tracks successful
+  assessment hints, and withholds non-hint modes while assessment evidence is being collected.
+- `src/lib/tutor-schemas.ts`: structured helper request/reply schemas and sequential graph/table validation.
+- `src/lib/tutor-prompts.ts`: format-specific, assessment-safe helper prompt.
+- `src/lib/tutor-core.ts`: mode/representation checks, assessment hint gate, different-method check, and source-bound
+  labeled chart validation.
+- `src/test/learning-helper.test.ts` (new): helper format, chart provenance, assessment-boundary and method-change
+  tests.
+- `IMPLEMENTATION_STATUS.md`.
+
+### Verification and limitations
+
+- `git diff --check`: passed.
+- Targeted Vitest (`src/test/learning-helper.test.ts`, `src/test/tutor-core.test.ts`): attempted; npm exited 1
+  because `vitest` is not installed (`'vitest' is not recognized...`), so no tests executed.
+- Production build: attempted; `npm run build` exited 1 because `vite` is not installed (`'vite' is not
+  recognized...`), so no build executed. Typecheck/lint were not run; `node_modules` is absent and global `tsc`
+  is unavailable.
+- Helper history is local to the current browser/device and capped at 12 turns; it does not sync between devices.
+  The AI's explanatory judgment and the semantic quality of a suggested hint cannot be proven by schema
+  validation. Assessment gates omit answer keys and use concise hint-only output, but hints are not guaranteed to
+  be pedagogically perfect.
+- Charting is intentionally limited to explicitly labeled numeric rows; it does not infer a dataset from prose,
+  formulas, or unlabeled numbers. Existing generated lesson diagrams outside this helper remain unchanged.
+- No dependencies were installed. No deployment, commit, or push was performed for this phase.
 
 ## Current phase: end-of-phase assessment and adaptive progression
 
-The assessment lifecycle is implemented in the current worktree but has not been deployed, committed, or pushed.
-It reuses the existing course plan, Supabase Postgres/RLS, authenticated server functions, and current AI provider.
-The assessment migration is pending application.
+The assessment lifecycle is implemented on this branch in commit `22927f0`. It reuses the existing course plan,
+Supabase Postgres/RLS, authenticated server functions, and current AI provider. The assessment migration is pending
+application.
 
 ### Behavior implemented
 
@@ -83,10 +146,9 @@ The assessment migration is pending application.
 
 ## Current phase: personalized structured courses
 
-Course-generation changes are implemented in this worktree; dependency and database tooling are unavailable for
-runtime verification. No deployment, commit, or push was performed for this phase. It reuses the current tutor
-server function/provider, Supabase Postgres, and existing per-user RLS; it does not add another AI provider or
-database.
+Course-generation changes are implemented on this branch in commit `dcbf0aa`; dependency and database tooling were
+unavailable for runtime verification. It reuses the current tutor server function/provider, Supabase Postgres, and
+existing per-user RLS; it does not add another AI provider or database.
 
 ### Architecture and behavior implemented
 

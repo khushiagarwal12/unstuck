@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
+import { LearningHelper } from "@/components/LearningHelper";
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
 import { askTutor } from "@/lib/tutor.functions";
@@ -470,6 +471,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
   const [writtenAnswers, setWrittenAnswers] = useState<Record<string, string>>({});
   const [followUpAnswers, setFollowUpAnswers] = useState<Record<string, string>>({});
   const [usedHints, setUsedHints] = useState<Record<string, string[]>>({});
+  const [readyHintStorageKey, setReadyHintStorageKey] = useState<string | null>(null);
   const [pendingAttemptIds, setPendingAttemptIds] = useState<Record<string, string>>({});
   const [submittingPhaseId, setSubmittingPhaseId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -498,10 +500,46 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
   const nextTopic = currentEntry?.topic;
   const last = concepts[0];
   const away = last ? (Date.now() - new Date(last.updated_at).getTime()) / 86400000 : 0;
+  const hintStorageKey = `unstuck.course-hints.v1:${userId}:${course?.id ?? "none"}`;
 
   useEffect(() => {
     capabilities().then((result) => setVisionAvailable(result.vision)).catch(() => setVisionAvailable(false));
   }, [capabilities]);
+
+  useEffect(() => {
+    setReadyHintStorageKey(null);
+    try {
+      const raw = window.localStorage.getItem(hintStorageKey);
+      const value: unknown = raw ? JSON.parse(raw) : {};
+      const restored: Record<string, string[]> = {};
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+        for (const [phaseId, ids] of Object.entries(value)) {
+          if (Array.isArray(ids)) restored[phaseId] = ids.filter((id): id is string => typeof id === "string" && id.length <= 40).slice(0, 10);
+        }
+      }
+      setUsedHints(restored);
+    } catch {
+      setErr("Assessment hint history couldn't be read from this device; use of a new hint will still be recorded.");
+      setUsedHints({});
+    }
+    setReadyHintStorageKey(hintStorageKey);
+  }, [hintStorageKey]);
+
+  useEffect(() => {
+    if (readyHintStorageKey !== hintStorageKey) return;
+    try {
+      window.localStorage.setItem(hintStorageKey, JSON.stringify(usedHints));
+    } catch {
+      setErr("Assessment hint history couldn't be saved on this device.");
+    }
+  }, [hintStorageKey, readyHintStorageKey, usedHints]);
+
+  const markHintUsed = (phaseId: string, questionId: string) => {
+    setUsedHints((current) => ({
+      ...current,
+      [phaseId]: Array.from(new Set([...(current[phaseId] ?? []), questionId])),
+    }));
+  };
 
   const makeCourse = async () => {
     if (!courseGoal.trim() || creating) return;
@@ -610,7 +648,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
   };
 
   const submitAssessment = async (phase: CoursePlan["phases"][number]) => {
-    if (!course || !phase.assessment.answerToken || submittingPhaseId) return;
+    if (!course || !phase.assessment.answerToken || submittingPhaseId || readyHintStorageKey !== hintStorageKey) return;
     const priorResults = courseAttempts.filter((attempt) => attempt.phase_id === phase.id);
     const latest = priorResults[0];
     const objectiveQs = phase.assessment.objectiveQuestions ?? [];
@@ -741,6 +779,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
                     objectiveQuestions.every((question) => objectiveAnswers[`${phase.id}:${question.id}`] !== undefined) &&
                     openQuestions.every((question) => (writtenAnswers[`${phase.id}:${question.id}`] ?? "").trim().length > 0) &&
                     (!followUpId || (followUpAnswers[`${phase.id}:${followUpId}`] ?? "").trim().length > 0) &&
+                    readyHintStorageKey === hintStorageKey &&
                     submittingPhaseId !== phase.id;
                   return (
                   <section key={phase.id} className="border-l-2 pl-4">
@@ -764,6 +803,12 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
                               <p className="whitespace-pre-line text-sm">{topic.lesson.explanation}</p>
                               <div><h5 className="font-medium">Worked examples</h5>{topic.lesson.examples.map((example) => <div key={example.prompt} className="mt-2 rounded-md bg-secondary p-3 text-sm"><p className="font-medium">{example.prompt}</p><p className="mt-1 whitespace-pre-line">{example.walkthrough}</p></div>)}</div>
                               <div><h5 className="font-medium">Guided practice</h5>{topic.lesson.guidedPractice.map((practice) => <details key={practice.prompt} className="mt-2 rounded-md border p-3 text-sm"><summary className="cursor-pointer">{practice.prompt}</summary><p className="mt-2"><strong>Hint:</strong> {practice.hint}</p><p className="mt-1 text-muted-foreground"><strong>Success criteria:</strong> {practice.successCriteria}</p></details>)}</div>
+                              <LearningHelper
+                                context={JSON.stringify({ course: course.title, goal: course.goal, phase: phase.title, lesson: { topic: topic.name, purpose: topic.why, objectives: topic.objectives, prerequisites: topic.prerequisites.map((id) => { const entry = topicEntries.find((item) => item.topic.id === id); return entry ? { topic: entry.topic.name, explanation: entry.topic.lesson.explanation.slice(0, 500) } : { topic: id }; }), explanation: topic.lesson.explanation.slice(0, 1000), examples: topic.lesson.examples.slice(0, 2).map((example) => ({ prompt: example.prompt.slice(0, 250), walkthrough: example.walkthrough.slice(0, 400) })), practice: topic.lesson.guidedPractice.slice(0, 1).map((item) => ({ prompt: item.prompt, successCriteria: item.successCriteria })) } })}
+                                numericEvidence={[courseMaterial, topic.lesson.examples.map((example) => `${example.prompt}\n${example.walkthrough}`).join("\n")].join("\n").slice(0, 3000)}
+                                currentMethod="course lesson explanation and worked examples"
+                                storageKey={`unstuck.helper.v1:${userId}:${course.id}:${phase.id}:${topic.id}`}
+                              />
                               <button onClick={() => void completeTopic()} className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">Mark practice complete</button>
                             </div>
                           )}
@@ -777,23 +822,51 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
                         <>
                           {objectiveQuestions.map((question) => {
                             const hintKey = `${phase.id}:${question.id}`;
+                            const selectedIndex = objectiveAnswers[hintKey];
+                            const selectedAnswer = selectedIndex === undefined ? null : question.options[selectedIndex] ?? null;
                             const hintShown = (usedHints[phase.id] ?? []).includes(question.id);
+                            const relatedTopic = phase.topics.find((topic) => topic.objectives.some((objective) => objective.toLowerCase() === question.objective.toLowerCase()));
+                            const prerequisites = relatedTopic?.prerequisites.slice(0, 2).map((id) => {
+                              const entry = topicEntries.find((item) => item.topic.id === id);
+                              return entry ? { topic: entry.topic.name, explanation: entry.topic.lesson.explanation.slice(0, 500) } : { topic: id };
+                            }) ?? [];
                             return <fieldset key={question.id} className="mt-4 rounded-md border bg-background p-3">
                               <legend className="px-1 text-sm font-medium">{question.question} <span className="text-xs text-muted-foreground">({question.points} pts · {question.objective})</span></legend>
                               <div className="mt-2 space-y-2">{question.options.map((option, index) => <label key={option} className="flex gap-2 text-sm"><input type="radio" name={hintKey} checked={objectiveAnswers[hintKey] === index} onChange={() => setObjectiveAnswers((current) => ({ ...current, [hintKey]: index }))} />{option}</label>)}</div>
-                              <button type="button" onClick={() => setUsedHints((current) => ({ ...current, [phase.id]: Array.from(new Set([...(current[phase.id] ?? []), question.id])) }))} className="mt-2 text-xs text-accent underline">Show hint</button>
+                              <button type="button" onClick={() => markHintUsed(phase.id, question.id)} className="mt-2 text-xs text-accent underline">Show hint</button>
                               {hintShown && <p className="mt-1 text-xs text-muted-foreground">{question.hint}</p>}
+                              <LearningHelper
+                                context={JSON.stringify({ course: course.title, goal: course.goal, phase: phase.title, prerequisites, question: question.question, objective: question.objective, learnerAnswer: selectedAnswer, publicHint: question.hint, previousFeedback: latestAttempt?.evaluation.objectiveResults.find((result) => result.questionId === question.id) ?? null })}
+                                numericEvidence={[courseMaterial, phase.topics.flatMap((item) => item.lesson.examples.map((example) => `${example.prompt}\n${example.walkthrough}`)).join("\n")].join("\n").slice(0, 3000)}
+                                currentMethod="phase assignment question"
+                                assessmentActive={!latestAttempt}
+                                storageKey={`unstuck.helper.v1:${userId}:${course.id}:${phase.id}:${question.id}`}
+                                onHintUsed={() => markHintUsed(phase.id, question.id)}
+                              />
                             </fieldset>;
                           })}
                           {openQuestions.map((question) => {
                             const responseKey = `${phase.id}:${question.id}`;
                             const followUpPending = latestAttempt?.evaluation.followUpQuestionId === question.id;
                             const hintShown = (usedHints[phase.id] ?? []).includes(question.id);
+                            const relatedTopic = phase.topics.find((topic) => topic.objectives.some((objective) => objective.toLowerCase() === question.objective.toLowerCase()));
+                            const prerequisites = relatedTopic?.prerequisites.slice(0, 2).map((id) => {
+                              const entry = topicEntries.find((item) => item.topic.id === id);
+                              return entry ? { topic: entry.topic.name, explanation: entry.topic.lesson.explanation.slice(0, 500) } : { topic: id };
+                            }) ?? [];
                             return <div key={question.id} className="mt-4 rounded-md border bg-background p-3">
                               <label className="block text-sm font-medium">{question.prompt} <span className="text-xs text-muted-foreground">({question.objective})</span><textarea maxLength={500} className="mt-2 w-full rounded-md border bg-background p-2" rows={3} value={writtenAnswers[responseKey] ?? ""} onChange={(event) => setWrittenAnswers((current) => ({ ...current, [responseKey]: event.target.value }))} /></label>
-                              <button type="button" onClick={() => setUsedHints((current) => ({ ...current, [phase.id]: Array.from(new Set([...(current[phase.id] ?? []), question.id])) }))} className="mt-2 text-xs text-accent underline">Show hint</button>
+                              <button type="button" onClick={() => markHintUsed(phase.id, question.id)} className="mt-2 text-xs text-accent underline">Show hint</button>
                               {hintShown && <p className="mt-1 text-xs text-muted-foreground">{question.hint}</p>}
                               {followUpPending && latestAttempt?.evaluation.followUpQuestion && <label className="mt-3 block text-sm font-medium">{latestAttempt.evaluation.followUpQuestion}<textarea maxLength={200} className="mt-1 w-full rounded-md border bg-background p-2" rows={2} value={followUpAnswers[responseKey] ?? ""} onChange={(event) => setFollowUpAnswers((current) => ({ ...current, [responseKey]: event.target.value }))} /></label>}
+                              <LearningHelper
+                                context={JSON.stringify({ course: course.title, goal: course.goal, phase: phase.title, prerequisites, question: question.prompt, objective: question.objective, learnerAnswer: writtenAnswers[responseKey] ?? null, publicHint: question.hint, followUp: followUpPending ? latestAttempt?.evaluation.followUpQuestion : null, previousFeedback: latestAttempt?.evaluation.writtenResults.find((result) => result.questionId === question.id) ?? null })}
+                                numericEvidence={[courseMaterial, phase.topics.flatMap((item) => item.lesson.examples.map((example) => `${example.prompt}\n${example.walkthrough}`)).join("\n")].join("\n").slice(0, 3000)}
+                                currentMethod="phase assignment question"
+                                assessmentActive={!latestAttempt || (followUpPending && !(followUpAnswers[responseKey] ?? "").trim())}
+                                storageKey={`unstuck.helper.v1:${userId}:${course.id}:${phase.id}:${question.id}`}
+                                onHintUsed={() => markHintUsed(phase.id, question.id)}
+                              />
                             </div>;
                           })}
                           <p className="mt-3 text-sm"><strong>Phase criteria:</strong> {phase.assessment.passCriteria}</p>

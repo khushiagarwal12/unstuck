@@ -1,5 +1,5 @@
 import { promptFor, solvePrompt, SYSTEM } from "./tutor-prompts";
-import { type Action, extractJson, normalize, schemas, solveSchema } from "./tutor-schemas";
+import { type Action, extractJson, helperRequestSchema, normalize, schemas, solveSchema } from "./tutor-schemas";
 
 export type Tier = "main" | "fast";
 export type ImageInput = { mimeType: string; data: string }; // data is base64
@@ -77,6 +77,65 @@ export async function runTutor(gen: Generate, action: Action, payload: Record<st
       if (checks.every(Boolean)) return JSON.stringify(plan);
     }
     throw new TutorError("The tutor couldn't create an assignment with verified answer keys. Please try again.");
+  }
+
+  if (action === "helper") {
+    const request = helperRequestSchema.parse(payload);
+    if (request.assessmentActive && request.mode !== "hint") {
+      throw new TutorError("During an active assessment, the helper can provide hints only.");
+    }
+    const value = await generateValid(gen, action, promptFor(action, request), "fast", 0.3) as {
+      mode: typeof request.mode;
+      teachingMethod: string | null;
+      representation: { kind: string; notice?: string; body?: string; bars?: { label: string; value: number }[] };
+    };
+    if (value.mode !== request.mode) throw new TutorError("The helper couldn't honor that format request. Please try again.");
+    const expectedRepresentation: Record<string, string> = {
+      simpler: "text",
+      "worked-example": "worked-example",
+      hint: "text",
+      analogy: "text",
+      flowchart: "flowchart",
+      "different-method": "text",
+      "incorrect-answer": "text",
+      "prerequisite-review": "text",
+      "comparison-table": "comparison-table",
+    };
+    const expected = expectedRepresentation[request.mode];
+    if (expected && value.representation.kind !== expected) {
+      throw new TutorError("The helper couldn't create the requested representation. Please try again.");
+    }
+    if (request.mode === "different-method") {
+      const currentTokens = new Set(request.currentMethod?.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+      const nextTokens = new Set(value.teachingMethod?.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+      const overlap = [...currentTokens].filter((token) => nextTokens.has(token)).length;
+      if (!value.teachingMethod || (currentTokens.size > 0 && overlap / currentTokens.size >= 0.7)) {
+        throw new TutorError("The helper couldn't provide a clearly different teaching method. Please try again.");
+      }
+    }
+    if (request.mode === "hint" &&
+      (value.representation.kind !== "text" ||
+        (value.representation.body?.length ?? 0) > 280 ||
+        JSON.stringify(value).length > 1000)) {
+      throw new TutorError("The helper couldn't produce a concise hint without exposing a solution. Please try again.");
+    }
+    if (request.mode === "bar-chart") {
+      const sourcePairs = request.numericEvidence.split(/\r?\n/).flatMap((line) => {
+        const match = /^\s*([A-Za-z][A-Za-z0-9 _-]{0,39})\s*[:,=]\s*(-?\d+(?:\.\d+)?)\s*$/.exec(line);
+        return match ? [{ label: match[1]!.trim().toLowerCase(), value: Number(match[2]) }] : [];
+      });
+      const hasMeaningfulData = sourcePairs.length >= 2 && new Set(sourcePairs.map((pair) => pair.label)).size >= 2;
+      if (value.representation.kind === "bar-chart") {
+        const bars = value.representation.bars ?? [];
+        if (!hasMeaningfulData || bars.some((bar) =>
+          !sourcePairs.some((pair) => pair.label === bar.label.trim().toLowerCase() && pair.value === bar.value))) {
+          throw new TutorError("The helper couldn't verify chart values in the supplied material. No chart was shown.");
+        }
+      } else if (hasMeaningfulData || !value.representation.notice) {
+        throw new TutorError("The helper couldn't honor the chart request. Please try again.");
+      }
+    }
+    return JSON.stringify(value);
   }
 
   const value = await generateValid(gen, action, promptFor(action, payload), tier, temperature);

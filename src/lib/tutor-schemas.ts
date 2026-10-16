@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const ACTIONS = ["start", "diagnose", "intervene", "transfer", "course", "coach"] as const;
+export const ACTIONS = ["start", "diagnose", "intervene", "transfer", "course", "coach", "helper"] as const;
 export type Action = (typeof ACTIONS)[number];
 
 const text = (max = 600) => z.string().trim().min(1).max(max);
@@ -119,6 +119,78 @@ export const coachSchema = z.object({
   tip: text(300),
 });
 
+export const helperModes = [
+  "simpler", "worked-example", "hint", "analogy", "flowchart", "bar-chart",
+  "comparison-table", "different-method", "incorrect-answer", "prerequisite-review",
+] as const;
+
+export const helperRequestSchema = z.object({
+  mode: z.enum(helperModes),
+  request: text(300),
+  context: text(7000),
+  numericEvidence: z.string().max(3000).default(""),
+  currentMethod: z.string().max(120).optional(),
+  assessmentActive: z.boolean().default(false),
+  history: z.array(z.object({
+    mode: z.enum(helperModes),
+    response: text(800),
+  })).max(6).default([]),
+});
+
+const helperRepresentationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("text"), body: text(1200), notice: z.string().max(240).optional() }),
+  z.object({ kind: z.literal("worked-example"), steps: z.array(text(400)).min(2).max(6) }),
+  z.object({
+    kind: z.literal("flowchart"),
+    nodes: z.array(z.object({ id: text(24).regex(/^[a-z0-9-]+$/), label: text(100) })).min(2).max(6),
+    edges: z.array(z.object({ from: text(24), to: text(24), label: z.string().max(60).optional() })).min(1).max(8),
+    textAlternative: text(700),
+  }),
+  z.object({
+    kind: z.literal("bar-chart"),
+    title: text(100),
+    xLabel: text(60),
+    yLabel: text(60),
+    bars: z.array(z.object({ label: text(60), value: z.number().finite().min(-1000000).max(1000000) })).min(2).max(8),
+    textAlternative: text(700),
+  }),
+  z.object({
+    kind: z.literal("comparison-table"),
+    headers: z.array(text(80)).min(2).max(4),
+    rows: z.array(z.array(text(180)).min(2).max(4)).min(2).max(8),
+    textAlternative: text(700),
+  }),
+]);
+
+export const helperReplySchema = z.object({
+  mode: z.enum(helperModes),
+  title: text(120),
+  explanation: text(900),
+  teachingMethod: text(100).nullable(),
+  representation: helperRepresentationSchema,
+}).superRefine((reply, ctx) => {
+  const representation = reply.representation;
+  if (representation.kind === "flowchart") {
+    const ids = new Set(representation.nodes.map((node) => node.id));
+    if (ids.size !== representation.nodes.length ||
+      representation.edges.length !== representation.nodes.length - 1 ||
+      representation.edges.some((edge, index) =>
+        !ids.has(edge.from) || !ids.has(edge.to) ||
+        edge.from !== representation.nodes[index]?.id ||
+        edge.to !== representation.nodes[index + 1]?.id)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Flowchart edges must connect distinct declared nodes." });
+    }
+  }
+  if (representation.kind === "bar-chart" &&
+    new Set(representation.bars.map((bar) => bar.label.toLowerCase())).size !== representation.bars.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Bar chart labels must be distinct." });
+  }
+  if (representation.kind === "comparison-table" &&
+    representation.rows.some((row) => row.length !== representation.headers.length)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Comparison rows must match the table header count." });
+  }
+});
+
 const publicPhaseSchema = z.object({
   id: text(40).regex(/^[a-z0-9-]+$/),
   title: text(100),
@@ -171,6 +243,7 @@ export const schemas = {
   intervene: interveneSchema,
   course: courseSchema,
   coach: coachSchema,
+  helper: helperReplySchema,
 } as const;
 export type CoursePlan = z.infer<typeof publicCourseSchema>;
 export type GeneratedCoursePlan = z.infer<typeof courseSchema>;

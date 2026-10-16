@@ -1,6 +1,7 @@
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState } from "react";
 import { LessonTools, type Caps } from "@/components/LessonTools";
+import { LearningHelper } from "@/components/LearningHelper";
 import { getCapabilities, readProblem } from "@/lib/google.functions";
 import { shrinkImage } from "@/lib/image";
 import { clearSession, readSession, writeSession } from "@/lib/session-storage";
@@ -213,7 +214,27 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit, storageKey
   };
 
   const stageIdx = STAGES.findIndex((s) => s.id === (stage === "done" ? "transfer" : stage));
-
+  const assessmentActive = stage === "diagnostic" || stage === "transfer" || (stage === "diagnosis" && diagnosis?.needsFollowUp === true);
+  const helperContext = JSON.stringify({
+    topic: diag?.concept ?? topic,
+    notes: notes.slice(0, 1000),
+    stage,
+    diagnosis: diagnosis ? {
+      demonstrated: diagnosis.demonstrated.slice(0, 2),
+      hypotheses: diagnosis.hypotheses.filter((item) => !disputed.includes(item.label)).slice(0, 2).map(({ summary, confidence }) => ({ summary, confidence })),
+      unresolved: diagnosis.unresolved.slice(0, 2),
+    } : null,
+    lesson: lesson ? { title: lesson.title, body: lesson.body.slice(0, 1000), steps: lesson.steps.slice(0, 4).map((step) => step.slice(0, 250)), method: lesson.style } : null,
+    activeQuestion: stage === "diagnostic" ? diag?.question : stage === "transfer" ? transfer?.question : null,
+    diagnosticFollowUp: stage === "diagnosis" && diagnosis?.needsFollowUp ? diagnosis.followUp?.question : null,
+    lastAttempt: stage === "done" ? {
+      question: transfer?.question,
+      learnerAnswer: tPick == null ? null : transfer?.options[tPick],
+      correct: history[history.length - 1]?.correct,
+      explanation: transfer?.explanation,
+    } : null,
+  });
+  const helperNumericEvidence = [notes.slice(0, 1500), lesson?.body ?? "", ...(lesson?.steps ?? [])].join("\n").slice(0, 3000);
 
   return (
     <section className="min-w-0">
@@ -346,6 +367,14 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit, storageKey
               </div>
             </Card>
           )}
+          <LearningHelper
+            context={helperContext}
+            numericEvidence={helperNumericEvidence}
+            currentMethod={lesson?.style}
+            assessmentActive={assessmentActive}
+            storageKey={`unstuck.helper.v1:${storageKey ?? "guest-session"}`}
+            onHintUsed={() => setStyles((current) => current.includes("hint") ? current : [...current, "hint"])}
+          />
         </section>
   );
 }
