@@ -53,17 +53,43 @@ export const courseSchema = z.object({
   title: text(120),
   goal: z.string().trim().max(300),
   outcomes: z.array(text(200)).min(1).max(6),
-  topics: z
-    .array(
-      z.object({
+  phases: z.array(z.object({
+    id: text(40).regex(/^[a-z0-9-]+$/),
+    title: text(100),
+    purpose: text(300),
+    topics: z.array(z.object({
+      id: text(40).regex(/^[a-z0-9-]+$/),
+      name: text(80),
+      why: text(300),
+      covers: z.array(text(80)).min(1).max(4),
+      prerequisites: z.array(text(40)).max(4),
+      objectives: z.array(text(200)).min(1).max(5),
+      subtopics: z.array(z.object({
         name: text(80),
-        why: text(300),
-        prerequisites: z.array(text(80)).max(4),
-        minutes: z.number().int().min(1).max(120),
+        objective: text(200),
+      })).min(1).max(5),
+      lesson: z.object({
+        explanation: text(1800),
+        examples: z.array(z.object({
+          prompt: text(300),
+          walkthrough: text(800),
+        })).min(1).max(3),
+        guidedPractice: z.array(z.object({
+          prompt: text(300),
+          hint: text(300),
+          successCriteria: text(300),
+        })).min(1).max(3),
       }),
-    )
-    .min(3)
-    .max(8),
+      minutes: z.number().int().min(1).max(120),
+    })).min(1).max(4),
+    assessment: z.object({
+      title: text(100),
+      purpose: text(300),
+      tasks: z.array(text(500)).min(1).max(4),
+      rubric: z.array(text(300)).min(2).max(5),
+      passCriteria: text(300),
+    }),
+  })).min(2).max(5),
 });
 
 export const coachSchema = z.object({
@@ -82,6 +108,7 @@ export const schemas = {
   course: courseSchema,
   coach: coachSchema,
 } as const;
+export type CoursePlan = z.infer<typeof courseSchema>;
 
 export const MAX_FOLLOW_UPS = 2;
 
@@ -105,15 +132,34 @@ export function normalize(action: Action, value: unknown, payload: Record<string
     return { ...d, hypotheses, needsFollowUp: wants, followUp: wants ? d.followUp : null };
   }
   if (action === "course") {
-    // A prerequisite may only point at an earlier topic, so the plan can be followed in order.
     const c = value as z.infer<typeof courseSchema>;
     const seen = new Set<string>();
-    const topics = c.topics.map((t) => {
-      const prerequisites = t.prerequisites.filter((p) => seen.has(p.toLowerCase()));
-      seen.add(t.name.toLowerCase());
-      return { ...t, prerequisites };
+    const phaseIds = new Set<string>();
+    let topicCount = 0;
+    const phases = c.phases.map((phase) => {
+      if (phaseIds.has(phase.id)) throw new Error("Course phases must have distinct ids.");
+      phaseIds.add(phase.id);
+      const topics = phase.topics.map((topic) => {
+        if (seen.has(topic.id)) throw new Error("Course topics must have distinct ids.");
+        topicCount++;
+        const prerequisites = topic.prerequisites.filter((id) => seen.has(id));
+        seen.add(topic.id);
+        return { ...topic, prerequisites };
+      });
+      return { ...phase, topics };
     });
-    return { ...c, topics };
+    if (topicCount < 4) throw new Error("A course plan needs at least four learning topics.");
+    return {
+      ...c,
+      phases,
+      topics: phases.flatMap((phase) => phase.topics.map((topic) => ({
+        id: topic.id,
+        name: topic.name,
+        why: topic.why,
+        prerequisites: topic.prerequisites,
+        minutes: topic.minutes,
+      }))),
+    };
   }
   return value;
 }

@@ -156,14 +156,19 @@ describe("rules the model cannot be trusted with", () => {
   it("only lets a course prerequisite point at an earlier topic", () => {
     const course = {
       title: "t", goal: "g", outcomes: ["o"],
-      topics: [
-        { name: "A", why: "w", prerequisites: ["B"], minutes: 5 },
-        { name: "B", why: "w", prerequisites: ["A", "Outside"], minutes: 5 },
-        { name: "C", why: "w", prerequisites: ["a", "b"], minutes: 5 },
+      phases: [
+        { id: "phase-1", title: "First", purpose: "p", topics: [
+          { id: "a", name: "A", why: "w", covers: ["A"], prerequisites: ["b"], objectives: ["o"], subtopics: [{ name: "s", objective: "o" }], lesson: { explanation: "e", examples: [{ prompt: "p", walkthrough: "w" }], guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }] }, minutes: 5 },
+          { id: "b", name: "B", why: "w", covers: ["B"], prerequisites: ["a", "Outside"], objectives: ["o"], subtopics: [{ name: "s", objective: "o" }], lesson: { explanation: "e", examples: [{ prompt: "p", walkthrough: "w" }], guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }] }, minutes: 5 },
+        ], assessment: { title: "a", purpose: "p", tasks: ["t"], rubric: ["r", "r"], passCriteria: "p" } },
+        { id: "phase-2", title: "Second", purpose: "p", topics: [
+          { id: "c", name: "C", why: "w", covers: ["C"], prerequisites: ["a", "b"], objectives: ["o"], subtopics: [{ name: "s", objective: "o" }], lesson: { explanation: "e", examples: [{ prompt: "p", walkthrough: "w" }], guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }] }, minutes: 5 },
+          { id: "d", name: "D", why: "w", covers: ["D"], prerequisites: ["c"], objectives: ["o"], subtopics: [{ name: "s", objective: "o" }], lesson: { explanation: "e", examples: [{ prompt: "p", walkthrough: "w" }], guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }] }, minutes: 5 },
+        ], assessment: { title: "a", purpose: "p", tasks: ["t"], rubric: ["r", "r"], passCriteria: "p" } },
       ],
     };
-    const out = normalize("course", course, {}) as { topics: { prerequisites: string[] }[] };
-    expect(out.topics.map((t) => t.prerequisites)).toEqual([[], ["A"], ["a", "b"]]);
+    const out = normalize("course", course, {}) as { topics: { id: string; prerequisites: string[] }[] };
+    expect(out.topics.map((t) => t.prerequisites)).toEqual([[], ["a"], ["a", "b"], ["c"]]);
   });
 });
 

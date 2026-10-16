@@ -68,6 +68,7 @@ export type Database = {
           goal: string | null
           id: string
           outcomes: string[]
+          plan: Json | null
           title: string
           topics: Json
           user_id: string
@@ -77,6 +78,7 @@ export type Database = {
           goal?: string | null
           id?: string
           outcomes?: string[]
+          plan?: Json | null
           title: string
           topics?: Json
           user_id: string
@@ -86,8 +88,42 @@ export type Database = {
           goal?: string | null
           id?: string
           outcomes?: string[]
+          plan?: Json | null
           title?: string
           topics?: Json
+          user_id?: string
+        }
+        Relationships: []
+      }
+      course_progress: {
+        Row: {
+          assessment_responses: Json
+          completed_phase_ids: string[]
+          completed_topic_ids: string[]
+          course_id: string
+          current_phase_id: string | null
+          current_topic_id: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          assessment_responses?: Json
+          completed_phase_ids?: string[]
+          completed_topic_ids?: string[]
+          course_id: string
+          current_phase_id?: string | null
+          current_topic_id?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          assessment_responses?: Json
+          completed_phase_ids?: string[]
+          completed_topic_ids?: string[]
+          course_id?: string
+          current_phase_id?: string | null
+          current_topic_id?: string | null
+          updated_at?: string
           user_id?: string
         }
         Relationships: []

@@ -5,6 +5,71 @@ Scope: authentication/user continuity and diagnostic-learning changes. No deploy
 or provider migration was performed. The historical audit below describes the earlier baseline and is not a report
 of this worktree's validation.
 
+## Current phase: personalized structured courses
+
+Course-generation changes are implemented in this worktree; dependency and database tooling are unavailable for
+runtime verification. No deployment, commit, or push was performed for this phase. It reuses the current tutor
+server function/provider, Supabase Postgres, and existing per-user RLS; it does not add another AI provider or
+database.
+
+### Architecture and behavior implemented
+
+- Course replies are validated as a phased `CoursePlan`: objectives, subtopics, prerequisite topic IDs, lessons,
+  worked examples, guided practice, and end-of-phase assessment tasks/rubrics/pass criteria are required.
+- The generation context includes the learner's goal, profile pace/level, recorded attempts and misconceptions,
+  concepts demonstrated under current criteria, supported gaps, and optional pasted or photo-transcribed material.
+  The prompt distinguishes self-report from observed performance and asks for scaffolded conceptual, applied, and
+  reasoning work.
+- A generated course is shown as a proposal before it is saved. Starting it creates a new course row, leaving older
+  plans intact. The structured plan is stored in `courses.plan`; learner-specific position, completed topics/phases,
+  and assessment responses are stored separately in `course_progress`.
+- The player presents lessons, examples, practice hints/criteria, and phase assessments. It saves position and
+  responses and blocks forward navigation over unmet topic prerequisites and incomplete earlier phases. A learner
+  can skip a topic only when all covered concepts have recorded demonstrated status and at least two clean
+  successes; self-report does not skip it.
+- RLS on `course_progress` requires the authenticated user to own both the progress row and its course. Existing
+  legacy courses remain visible with their original topic review flow.
+
+### Files changed in this course phase
+
+- `src/lib/tutor-schemas.ts`
+- `src/lib/tutor-prompts.ts`
+- `src/routes/index.tsx`
+- `src/integrations/supabase/types.ts`
+- `drizzle/migrations/0002_structured_courses.sql`
+- `src/test/tutor-core.test.ts`
+- `src/test/course-plans.test.ts`
+- `supabase/tests/0002_structured_courses.test.sql`
+- `IMPLEMENTATION_STATUS.md`
+
+### Verification and limitations
+
+- `git diff --check`: passed.
+- Targeted Vitest run (`src/test/course-plans.test.ts`, `src/test/tutor-core.test.ts`): **not run**; the command
+  failed because `vitest` is not installed (`node_modules` is absent). The new test checks distinct diagnostic
+  contexts produce distinct, schema-valid course plans through the existing tutor pipeline and covers course
+  personalization inputs; it does not prove a live model always responds appropriately.
+- Production build: **not run**; `vite` is not installed. Typecheck: **not run**; TypeScript is not installed.
+- SQL persistence/RLS pgTAP coverage was added in `supabase/tests/0002_structured_courses.test.sql` but was not run;
+  `supabase` CLI and `psql` are not installed and no live database was accessed. The migration has not been applied.
+- Phase completion is currently learner self-assessment against the generated rubric, not automatic grading. Lesson
+  completion is an explicit learner action; the existing tutor session is not yet tightly coupled to course lesson
+  completion. A manually transcribed or photo-read source material excerpt informs generation but is not retained as
+  a separately cited source in the saved plan.
+
+### Setup and prioritized follow-up
+
+1. Apply `drizzle/migrations/0002_structured_courses.sql` through the existing Supabase/Drizzle migration process
+   before using the new course loading and progress queries; then run the new pgTAP test.
+2. Install project dependencies in an environment where the configured package manager can resolve the lockfile,
+   then run the targeted Vitest tests, full tests, typecheck, lint, and production build. The prior documented
+   `npm install` resolver error remains unresolved; no install was retried here.
+3. Manually verify course generation and progress recovery against configured Supabase and the existing tutor
+   provider. Photo material is available only when the existing Google/Gemini vision capability is configured.
+4. Consider server-side grade validation or course-lesson attempt linkage in a later phase. Avoid regenerating or
+   mutating an active course automatically; current regeneration creates a separate saved course to preserve prior
+   work.
+
 ## Current phase: authentication continuity and diagnostic learning
 
 ### Architecture in this worktree

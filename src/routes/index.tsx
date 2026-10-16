@@ -5,6 +5,9 @@ import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
 import { askTutor } from "@/lib/tutor.functions";
+import { courseSchema, type CoursePlan } from "@/lib/tutor-schemas";
+import { getCapabilities, readProblem } from "@/lib/google.functions";
+import { shrinkImage } from "@/lib/image";
 import { importGuestProgress } from "@/lib/progress.functions";
 import { appendGuestProgress, clearGuestProgress, GUEST_PROGRESS_KEY, readGuestProgress, type GuestProgressBundle } from "@/lib/guest-progress";
 import { adoptGuestSession } from "@/lib/session-storage";
@@ -27,8 +30,19 @@ export const Route = createFileRoute("/")({
 
 type Profile = { id: string; display_name: string | null; avatar_url: string | null; goal: string | null; subject: string | null; level: string | null; study_minutes: number | null; preferred_styles: string[]; onboarded: boolean };
 type Concept = { id: string; concept: string; status: string; misconceptions: string[]; styles: string[]; hints_used: number; attempts: number; clean_successes: number; review_interval_days: number; review_at: string | null; last_explanation: string | null; updated_at: string };
-type Topic = { name: string; why: string; prerequisites: string[]; minutes: number };
-type Course = { id: string; title: string; goal: string | null; outcomes: string[]; topics: Topic[]; created_at: string };
+type Topic = { id: string; name: string; why: string; prerequisites: string[]; minutes: number };
+type Course = { id: string; title: string; goal: string | null; outcomes: string[]; topics: Topic[]; plan: CoursePlan | null; created_at: string };
+type CourseProgress = {
+  user_id: string;
+  course_id: string;
+  current_phase_id: string | null;
+  current_topic_id: string | null;
+  completed_topic_ids: string[];
+  completed_phase_ids: string[];
+  assessment_responses: Record<string, string>;
+  updated_at: string;
+};
+type CourseProgressPatch = Partial<Omit<CourseProgress, "user_id" | "course_id" | "updated_at">>;
 
 type View = { kind: "home" } | { kind: "learn"; topic?: string; key: number } | { kind: "settings" };
 
@@ -189,6 +203,7 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
   const [profile, setProfile] = useState<Profile | null>(null);
   const [concepts, setConcepts] = useState<Concept[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
+  const [courseProgress, setCourseProgress] = useState<Record<string, CourseProgress>>({});
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
@@ -208,12 +223,13 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
       setLoadErr(error instanceof Error ? error.message : "We couldn't safely import your guest progress. It is still saved on this device.");
       return;
     }
-    const [p, c, k] = await Promise.all([
+    const [p, c, k, cp] = await Promise.all([
       supabase.from("profiles").select("*").eq("id", user.id).maybeSingle(),
       supabase.from("concepts").select("*").order("updated_at", { ascending: false }),
       supabase.from("courses").select("*").order("created_at", { ascending: false }),
+      supabase.from("course_progress").select("*"),
     ]);
-    if (p.error || c.error || k.error) { setLoadErr("We couldn't load your learning profile."); return; }
+    if (p.error || c.error || k.error || cp.error) { setLoadErr("We couldn't load your learning profile."); return; }
     let prof = p.data as Profile | null;
     if (!prof) {
       const ins = await supabase.from("profiles").insert({ id: user.id, display_name: (user.user_metadata?.full_name as string) ?? null, avatar_url: (user.user_metadata?.avatar_url as string) ?? null }).select().single();
@@ -221,7 +237,20 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
     }
     setProfile(prof);
     setConcepts((c.data ?? []) as Concept[]);
-    setCourses((k.data ?? []) as unknown as Course[]);
+    const parsedCourses: Course[] = [];
+    for (const row of k.data ?? []) {
+      let plan: CoursePlan | null = null;
+      if (row.plan) {
+        const parsed = courseSchema.safeParse(row.plan);
+        if (parsed.success) plan = parsed.data;
+      }
+      parsedCourses.push({ ...row, plan, topics: (row.topics ?? []) as unknown as Topic[] } as Course);
+    }
+    setCourses(parsedCourses);
+    setCourseProgress(Object.fromEntries((cp.data ?? []).map((row) => [row.course_id, {
+      ...row,
+      assessment_responses: (row.assessment_responses ?? {}) as Record<string, string>,
+    } as CourseProgress])));
   }, [user, importProgress, onGuestImport]);
   useEffect(() => { load(); }, [load]);
 
@@ -244,8 +273,29 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
       last_explanation: r.explanation ?? prev?.last_explanation ?? null,
       updated_at: new Date().toISOString(),
     };
+
     const { data } = await supabase.from("concepts").upsert(row, { onConflict: "user_id,concept" }).select().single();
     if (data) setConcepts((cs) => [data as Concept, ...cs.filter((c) => c.id !== (data as Concept).id)]);
+  };
+
+  const saveCourseProgress = async (courseId: string, patch: CourseProgressPatch) => {
+    const previous = courseProgress[courseId];
+    const next = {
+      user_id: user.id,
+      course_id: courseId,
+      current_phase_id: previous?.current_phase_id ?? null,
+      current_topic_id: previous?.current_topic_id ?? null,
+      completed_topic_ids: previous?.completed_topic_ids ?? [],
+      completed_phase_ids: previous?.completed_phase_ids ?? [],
+      assessment_responses: previous?.assessment_responses ?? {},
+      ...patch,
+      updated_at: new Date().toISOString(),
+    };
+    const { data, error } = await supabase.from("course_progress").upsert(next, { onConflict: "user_id,course_id" }).select().single();
+    if (error || !data) throw new Error("Couldn't save your course progress. Your existing progress is unchanged.");
+    const saved = { ...data, assessment_responses: data.assessment_responses as Record<string, string> } as CourseProgress;
+    setCourseProgress((current) => ({ ...current, [courseId]: saved }));
+    return saved;
   };
 
   const signOut = async () => {
@@ -293,7 +343,7 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
   );
   return (
     <Shell right={right}>
-      <Dashboard profile={profile} concepts={concepts} courses={courses} ask={ask} prefs={prefs} setCourses={setCourses} userId={user.id}
+      <Dashboard profile={profile} concepts={concepts} courses={courses} courseProgress={courseProgress} saveCourseProgress={saveCourseProgress} ask={ask} prefs={prefs} setCourses={setCourses} userId={user.id}
         learn={(topic) => setView({ kind: "learn", topic, key: Date.now() })}
         dismiss={async (c) => { const at = new Date(Date.now() + 7 * 86400000).toISOString(); await supabase.from("concepts").update({ review_at: at }).eq("id", c.id); setConcepts((cs) => cs.map((x) => x.id === c.id ? { ...x, review_at: at } : x)); }}
       />
@@ -370,122 +420,292 @@ function Onboarding({ profile, editing, onDone }: { profile: Profile; editing: b
 
 const statusGroup = (s: string) => s.startsWith("Demonstrated") ? "done" : s === "Progressing" ? "developing" : "work";
 
-function Dashboard({ profile, concepts, courses, ask, prefs, setCourses, userId, learn, dismiss }: {
-  profile: Profile; concepts: Concept[]; courses: Course[]; ask: ReturnType<typeof useServerFn<typeof askTutor>>; prefs: Record<string, unknown> | undefined;
+function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgress, ask, prefs, setCourses, userId, learn, dismiss }: {
+  profile: Profile; concepts: Concept[]; courses: Course[]; courseProgress: Record<string, CourseProgress>;
+  saveCourseProgress: (courseId: string, patch: CourseProgressPatch) => Promise<CourseProgress>;
+  ask: ReturnType<typeof useServerFn<typeof askTutor>>; prefs: Record<string, unknown> | undefined;
   setCourses: React.Dispatch<React.SetStateAction<Course[]>>; userId: string; learn: (t?: string) => void; dismiss: (c: Concept) => void;
 }) {
+  const readPhoto = useServerFn(readProblem);
+  const capabilities = useServerFn(getCapabilities);
   const [creating, setCreating] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [visionAvailable, setVisionAvailable] = useState(false);
   const [courseGoal, setCourseGoal] = useState(profile.subject ?? "");
+  const [courseMaterial, setCourseMaterial] = useState("");
+  const [draft, setDraft] = useState<CoursePlan | null>(null);
+  const [activeCourseId, setActiveCourseId] = useState(courses[0]?.id ?? "");
+  const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
+  const [assessmentDraft, setAssessmentDraft] = useState<Record<string, string>>({});
   const [err, setErr] = useState<string | null>(null);
   const [openExplanation, setOpenExplanation] = useState<string | null>(null);
-  const course = courses[0];
+  const course = courses.find((c) => c.id === activeCourseId) ?? courses[0];
+  const plan = course?.plan ?? null;
+  const progress = course ? courseProgress[course.id] : undefined;
   const byName = new Map(concepts.map((c) => [c.concept.toLowerCase(), c]));
   const needsDiagnostic = concepts.length === 0;
   const due = concepts.filter((c) => c.review_at && new Date(c.review_at) <= new Date());
   const work = concepts.filter((c) => statusGroup(c.status) === "work");
-  const nextTopic = course?.topics.find((t) => statusGroup(byName.get(t.name.toLowerCase())?.status ?? "x") !== "done");
+  const topicEntries = plan?.phases.flatMap((phase) => phase.topics.map((topic) => ({ phase, topic }))) ?? [];
+  const completedTopicIds = new Set(progress?.completed_topic_ids ?? []);
+  const completedPhaseIds = new Set(progress?.completed_phase_ids ?? []);
+  const openPhase = plan?.phases.find((phase) => !completedPhaseIds.has(phase.id));
+  const firstOpenTopic = openPhase?.topics.find((topic) => !completedTopicIds.has(topic.id));
+  const firstOpenEntry = topicEntries.find(({ phase, topic }) => phase.id === openPhase?.id && topic.id === firstOpenTopic?.id);
+  const currentEntry = topicEntries.find(({ phase, topic }) => phase.id === openPhase?.id && topic.id === activeTopicId)
+    ?? topicEntries.find(({ phase, topic }) => phase.id === openPhase?.id && topic.id === progress?.current_topic_id)
+    ?? firstOpenEntry;
+  const nextTopic = currentEntry?.topic;
   const last = concepts[0];
   const away = last ? (Date.now() - new Date(last.updated_at).getTime()) / 86400000 : 0;
 
+  useEffect(() => {
+    capabilities().then((result) => setVisionAvailable(result.vision)).catch(() => setVisionAvailable(false));
+  }, [capabilities]);
+
   const makeCourse = async () => {
     if (!courseGoal.trim() || creating) return;
-    if (needsDiagnostic) { setErr("Complete one quick diagnostic and practice question first so your plan starts from demonstrated knowledge."); return; }
-    setCreating(true); setErr(null);
+    if (needsDiagnostic) { setErr("Complete one diagnostic and practice attempt first so your plan starts from demonstrated knowledge."); return; }
+    setCreating(true); setErr(null); setDraft(null);
     try {
-      const { json } = await ask({ data: { action: "course", payload: { wantsToLearn: courseGoal, ...prefs, alreadyDemonstrated: concepts.filter((c) => statusGroup(c.status) === "done").map((c) => c.concept) } } });
-      const r = JSON.parse(json) as { title: string; goal: string; outcomes: string[]; topics: Topic[] };
-      const { data, error } = await supabase.from("courses").insert({ user_id: userId, title: r.title, goal: r.goal, outcomes: r.outcomes, topics: r.topics }).select().single();
-      if (error || !data) throw new Error("Couldn't save the course.");
-      setCourses((c) => [data as unknown as Course, ...c]);
+      const diagnosticResults = concepts.slice(0, 12).map((c) => ({
+        concept: c.concept.slice(0, 120), status: c.status.slice(0, 80), attempts: c.attempts,
+        cleanSuccesses: c.clean_successes, hintsUsed: c.hints_used,
+        misconceptions: c.misconceptions.slice(0, 2).map((item) => item.slice(0, 180)),
+        lastExplanation: c.last_explanation?.slice(0, 500) ?? null,
+      }));
+      const { json } = await ask({ data: { action: "course", payload: {
+        wantsToLearn: courseGoal.trim(),
+        ...prefs,
+        diagnosticResults,
+        prerequisiteGaps: concepts.filter((c) => statusGroup(c.status) !== "done").slice(0, 24).map((c) => c.concept.slice(0, 120)),
+        alreadyDemonstrated: concepts.filter((c) => statusGroup(c.status) === "done").slice(0, 24).map((c) => c.concept.slice(0, 120)),
+        learningMaterial: courseMaterial.trim().slice(0, 6000) || null,
+      } } });
+      const parsed = courseSchema.safeParse(JSON.parse(json));
+      if (!parsed.success) throw new Error("The generated course plan did not match the required structure. Please try again.");
+      setDraft(parsed.data);
     } catch (e) { setErr(e instanceof Error ? e.message : "Couldn't build a course."); }
     finally { setCreating(false); }
   };
 
+  const saveDraft = async () => {
+    if (!draft) return;
+    setCreating(true); setErr(null);
+    const topics = draft.phases.flatMap((phase) => phase.topics.map((topic) => ({
+      id: topic.id, name: topic.name, why: topic.why, prerequisites: topic.prerequisites, minutes: topic.minutes,
+    })));
+    const { data, error } = await supabase.from("courses").insert({
+      user_id: userId, title: draft.title, goal: draft.goal, outcomes: draft.outcomes, topics, plan: draft,
+    }).select().single();
+    if (error || !data) { setErr("Couldn't save the plan. The proposed plan is still available to review."); setCreating(false); return; }
+    const savedCourse = { ...data, plan: draft, topics } as unknown as Course;
+    setCourses((current) => [savedCourse, ...current]);
+    setActiveCourseId(savedCourse.id);
+    setDraft(null);
+    const first = draft.phases[0]?.topics[0];
+    if (first) {
+      try {
+        await saveCourseProgress(savedCourse.id, { current_phase_id: draft.phases[0]!.id, current_topic_id: first.id });
+        setActiveTopicId(first.id);
+        await startCourse(savedCourse);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "The course was saved, but its starting position couldn't be saved.");
+      }
+    }
+    setCreating(false);
+  };
+
+  const hasDemonstratedCover = (topic: CoursePlan["phases"][number]["topics"][number]) =>
+    topic.covers.length > 0 && topic.covers.every((name) => {
+      const record = byName.get(name.toLowerCase());
+      return record?.status.startsWith("Demonstrated") === true && record.clean_successes >= 2;
+    });
+
+  async function startCourse(selected: Course) {
+    if (!selected.plan) return;
+    const entries = selected.plan.phases.flatMap((phase) => phase.topics.map((topic) => ({ phase, topic })));
+    const covered = entries.filter(({ topic }) => hasDemonstratedCover(topic)).map(({ topic }) => topic.id);
+    const previous = courseProgress[selected.id];
+    const completed = Array.from(new Set([...(previous?.completed_topic_ids ?? []), ...covered]));
+    const completedPhases = new Set(previous?.completed_phase_ids ?? []);
+    const openPhase = selected.plan.phases.find((phase) => !completedPhases.has(phase.id));
+    const savedPosition = entries.find(({ phase, topic }) => phase.id === openPhase?.id && topic.id === previous?.current_topic_id && !completed.includes(topic.id));
+    const next = savedPosition ?? openPhase?.topics.find((topic) => !completed.includes(topic.id));
+    const nextPhaseId = openPhase?.id ?? null;
+    try {
+      await saveCourseProgress(selected.id, {
+        completed_topic_ids: completed,
+        current_phase_id: nextPhaseId,
+        current_topic_id: next?.id ?? null,
+      });
+      setActiveCourseId(selected.id);
+      setActiveTopicId(next?.id ?? null);
+    } catch (e) { setErr(e instanceof Error ? e.message : "Couldn't save your course position."); }
+  }
+
+  const selectTopic = async (phaseId: string, topicId: string) => {
+    if (!course) return;
+    try {
+      await saveCourseProgress(course.id, { current_phase_id: phaseId, current_topic_id: topicId });
+      setActiveTopicId(topicId);
+      setErr(null);
+    } catch (e) { setErr(e instanceof Error ? e.message : "Couldn't save your course position."); }
+  };
+
+  const completeTopic = async () => {
+    if (!course || !plan || !currentEntry) return;
+    const completed = Array.from(new Set([...(progress?.completed_topic_ids ?? []), currentEntry.topic.id]));
+    const openPhase = plan.phases.find((phase) => !completedPhaseIds.has(phase.id));
+    const next = openPhase?.topics.find((topic) => !completed.includes(topic.id));
+    try {
+      await saveCourseProgress(course.id, {
+        completed_topic_ids: completed,
+        current_phase_id: openPhase?.id ?? null,
+        current_topic_id: next?.id ?? null,
+      });
+      setActiveTopicId(next?.id ?? null);
+      setErr(null);
+    } catch (e) { setErr(e instanceof Error ? e.message : "Couldn't save your course progress."); }
+  };
+
+  const submitAssessment = async (phase: CoursePlan["phases"][number]) => {
+    if (!course) return;
+    const responses = { ...(progress?.assessment_responses ?? {}) };
+    phase.assessment.tasks.forEach((_, index) => {
+      responses[`${phase.id}:${index}`] = assessmentDraft[`${phase.id}:${index}`] ?? responses[`${phase.id}:${index}`] ?? "";
+    });
+    const completedPhases = Array.from(new Set([...(progress?.completed_phase_ids ?? []), phase.id]));
+    const nextPhase = plan?.phases.find((item) => !completedPhases.includes(item.id));
+    const next = nextPhase?.topics.find((topic) => !completedTopicIds.has(topic.id));
+    try {
+      await saveCourseProgress(course.id, {
+        assessment_responses: responses,
+        completed_phase_ids: completedPhases,
+        current_phase_id: nextPhase?.id ?? null,
+        current_topic_id: next?.id ?? null,
+      });
+      setActiveTopicId(next?.id ?? null);
+      setErr(null);
+    } catch (e) { setErr(e instanceof Error ? e.message : "Couldn't save your assessment."); }
+  };
+
+  const readMaterialPhoto = async (file: File) => {
+    setReading(true); setErr(null);
+    try {
+      const image = await shrinkImage(file);
+      const result = await readPhoto({ data: image });
+      setCourseMaterial((current) => [current.trim(), result.text].filter(Boolean).join("\n\n").slice(0, 6000));
+    } catch (e) { setErr(e instanceof Error ? e.message : "Couldn't read that study material."); }
+    finally { setReading(false); }
+  };
+
   const nextAction = due[0] ? { label: `Quick recall: ${due[0].concept}`, why: away > 3 ? "Welcome back — a short recap before moving on." : "It's time to check this one stuck.", go: () => learn(due[0]!.concept) }
-    : nextTopic ? { label: `Next in your course: ${nextTopic.name}`, why: nextTopic.why, go: () => learn(`${nextTopic.name} (part of: ${course!.title})`) }
+    : nextTopic && course ? { label: `Next in your course: ${nextTopic.name}`, why: nextTopic.why, go: () => { if (currentEntry) void selectTopic(currentEntry.phase.id, nextTopic.id); } }
     : work[0] ? { label: `Keep working on: ${work[0].concept}`, why: "This one still needs practice.", go: () => learn(work[0]!.concept) }
     : { label: "Get unstuck on something new", why: "Bring a question or concept that's bugging you.", go: () => learn() };
 
   return (
     <div className="space-y-8">
       <section className="card-paper flex flex-col gap-4 p-6 md:flex-row md:items-center md:justify-between md:p-8">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-widest text-accent">What to do next</p>
-          <h1 className="mt-1 text-3xl font-semibold">{nextAction.label}</h1>
-          <p className="mt-1 text-muted-foreground">{nextAction.why}</p>
-        </div>
-        <div className="flex flex-wrap gap-3">
-          <button onClick={nextAction.go} className="rounded-lg bg-primary px-5 py-2.5 font-medium text-primary-foreground">Start</button>
-          <button onClick={() => learn()} className="rounded-lg border px-5 py-2.5">I'm stuck on something else</button>
-        </div>
+        <div><p className="text-xs font-semibold uppercase tracking-widest text-accent">What to do next</p><h1 className="mt-1 text-3xl font-semibold">{nextAction.label}</h1><p className="mt-1 text-muted-foreground">{nextAction.why}</p></div>
+        <div className="flex flex-wrap gap-3"><button onClick={nextAction.go} className="rounded-lg bg-primary px-5 py-2.5 font-medium text-primary-foreground">Start</button><button onClick={() => learn()} className="rounded-lg border px-5 py-2.5">I'm stuck on something else</button></div>
       </section>
 
       <CoachCard userId={userId} firstName={profile.display_name?.split(" ")[0] ?? null} prefs={prefs} concepts={concepts} dueCount={due.length} daysAway={away} />
 
       <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr]">
-        <section className="card-paper p-6">
-          <h2 className="text-xl font-semibold">What you're learning</h2>
-          {course ? (
-            <>
-              <p className="mt-1 font-medium">{course.title}</p>
-              {course.goal && <p className="text-sm text-muted-foreground">{course.goal}</p>}
-              <ol className="mt-4 space-y-2">
-                {course.topics.map((t, i) => {
-                  const c = byName.get(t.name.toLowerCase());
-                  const g = c ? statusGroup(c.status) : "none";
+        <section className="card-paper space-y-5 p-6">
+          <div>
+            <h2 className="text-xl font-semibold">Your learning journey</h2>
+            <p className="mt-1 text-sm text-muted-foreground">A course is saved as a new plan, so revising never overwrites completed work.</p>
+          </div>
+          {courses.length > 0 && (
+            <label className="block text-sm font-medium">Saved plans
+              <select className="mt-2 w-full rounded-lg border bg-background p-2" value={course?.id ?? ""} onChange={(event) => { setActiveCourseId(event.target.value); setActiveTopicId(null); }}>
+                {courses.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+              </select>
+            </label>
+          )}
+          {course && plan ? (
+            <div className="rounded-xl border p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div><h3 className="text-lg font-semibold">{course.title}</h3><p className="text-sm text-muted-foreground">{course.goal}</p></div>
+                <button onClick={() => void startCourse(course)} className="rounded-md bg-secondary px-3 py-1.5 text-sm">Resume course</button>
+              </div>
+              <ul className="mt-3 flex flex-wrap gap-2">{plan.outcomes.map((outcome) => <li key={outcome} className="rounded-full bg-secondary px-3 py-1 text-xs">{outcome}</li>)}</ul>
+              <div className="mt-5 space-y-5">
+                {plan.phases.map((phase, phaseIndex) => {
+                  const phaseUnlocked = plan.phases.slice(0, phaseIndex).every((previousPhase) => completedPhaseIds.has(previousPhase.id));
                   return (
-                    <li key={t.name} className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                      <div className="min-w-0">
-                        <p className="font-medium"><span className="mr-2 font-mono text-muted-foreground">{i + 1}</span>{t.name}</p>
-                        <p className="text-xs text-muted-foreground">{c ? c.status : "Not assessed"} · ~{t.minutes} min{t.prerequisites?.length ? ` · builds on ${t.prerequisites.join(", ")}` : ""}</p>
-                      </div>
-                      <button onClick={() => learn(`${t.name} (part of: ${course.title})`)} className={`shrink-0 rounded-md px-3 py-1.5 text-sm ${g === "done" ? "border" : "bg-secondary"}`}>{g === "done" ? "Review" : c ? "Continue" : "Start"}</button>
-                    </li>
+                  <section key={phase.id} className="border-l-2 pl-4">
+                    <div className="flex items-start justify-between gap-2"><div><h4 className="font-semibold">Phase {phaseIndex + 1}: {phase.title}</h4><p className="text-sm text-muted-foreground">{phase.purpose}</p></div><span className="text-xs text-muted-foreground">{progress?.completed_phase_ids.includes(phase.id) ? "Assessment complete" : "In progress"}</span></div>
+                    <ol className="mt-3 space-y-2">
+                      {phase.topics.map((topic, index) => {
+                        const done = completedTopicIds.has(topic.id);
+                        const demonstrated = hasDemonstratedCover(topic);
+                        const prerequisitesDone = topic.prerequisites.every((id) => {
+                          if (completedTopicIds.has(id)) return true;
+                          const prerequisite = topicEntries.find((entry) => entry.topic.id === id)?.topic;
+                          return prerequisite ? hasDemonstratedCover(prerequisite) : false;
+                        });
+                        return <li key={topic.id} className="rounded-lg border p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0"><p className="font-medium">{index + 1}. {topic.name}{done && <span className="ml-2 text-xs text-success">Complete</span>}{demonstrated && !done && <span className="ml-2 text-xs text-accent">Already demonstrated</span>}</p><p className="text-xs text-muted-foreground">{topic.why} · ~{topic.minutes} min</p><p className="mt-1 text-xs text-muted-foreground">Objectives: {topic.objectives.join(" · ")}</p><p className="mt-1 text-xs text-muted-foreground">Subtopics: {topic.subtopics.map((item) => item.name).join(" · ")}</p>{topic.prerequisites.length > 0 && <p className="mt-1 text-xs text-muted-foreground">Builds on: {topic.prerequisites.map((id) => phase.topics.find((candidate) => candidate.id === id)?.name ?? topicEntries.find((entry) => entry.topic.id === id)?.topic.name ?? id).join(", ")}</p>}</div>
+                            <button disabled={!done && (!phaseUnlocked || !prerequisitesDone)} onClick={() => void selectTopic(phase.id, topic.id)} className="shrink-0 rounded-md bg-secondary px-3 py-1.5 text-sm disabled:opacity-50">{done ? "Review" : !phaseUnlocked ? "Finish prior phase" : prerequisitesDone ? "Open" : "Prerequisite first"}</button>
+                          </div>
+                          {activeTopicId === topic.id && (
+                            <div className="mt-4 space-y-4 border-t pt-4">
+                              <p className="whitespace-pre-line text-sm">{topic.lesson.explanation}</p>
+                              <div><h5 className="font-medium">Worked examples</h5>{topic.lesson.examples.map((example) => <div key={example.prompt} className="mt-2 rounded-md bg-secondary p-3 text-sm"><p className="font-medium">{example.prompt}</p><p className="mt-1 whitespace-pre-line">{example.walkthrough}</p></div>)}</div>
+                              <div><h5 className="font-medium">Guided practice</h5>{topic.lesson.guidedPractice.map((practice) => <details key={practice.prompt} className="mt-2 rounded-md border p-3 text-sm"><summary className="cursor-pointer">{practice.prompt}</summary><p className="mt-2"><strong>Hint:</strong> {practice.hint}</p><p className="mt-1 text-muted-foreground"><strong>Success criteria:</strong> {practice.successCriteria}</p></details>)}</div>
+                              <button onClick={() => void completeTopic()} className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">Mark practice complete</button>
+                            </div>
+                          )}
+                        </li>;
+                      })}
+                    </ol>
+                    <details className="mt-3 rounded-lg bg-secondary/50 p-3">
+                      <summary className="cursor-pointer font-medium">{phase.assessment.title} — end-of-phase assessment</summary>
+                      <p className="mt-2 text-sm text-muted-foreground">{phase.assessment.purpose}</p>
+                      {phase.assessment.tasks.map((task, index) => <label key={task} className="mt-3 block text-sm">{index + 1}. {task}<textarea className="mt-1 w-full rounded-md border bg-background p-2" rows={2} value={assessmentDraft[`${phase.id}:${index}`] ?? progress?.assessment_responses[`${phase.id}:${index}`] ?? ""} onChange={(event) => setAssessmentDraft((current) => ({ ...current, [`${phase.id}:${index}`]: event.target.value }))} /></label>)}
+                      <p className="mt-3 text-sm"><strong>Rubric:</strong> {phase.assessment.rubric.join(" · ")}</p><p className="mt-1 text-sm"><strong>Pass criteria:</strong> {phase.assessment.passCriteria}</p>
+                      <p className="mt-2 text-xs text-muted-foreground">Complete the phase topics first, answer each assessment task, and check your work against the rubric before continuing.</p>
+                      <button disabled={!phaseUnlocked || !phase.topics.every((topic) => completedTopicIds.has(topic.id)) || !phase.assessment.tasks.every((_, index) => (assessmentDraft[`${phase.id}:${index}`] ?? progress?.assessment_responses[`${phase.id}:${index}`] ?? "").trim())} onClick={() => void submitAssessment(phase)} className="mt-3 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">Save assessment and continue</button>
+                    </details>
+                  </section>
                   );
                 })}
-              </ol>
-              <p className="mt-3 text-xs text-muted-foreground">A topic counts as demonstrated after two correct answers in a row, in different situations, without hints.</p>
-            </>
-          ) : <p className="mt-2 text-sm text-muted-foreground">{needsDiagnostic ? "Complete one quick diagnostic first. We use what you demonstrate to choose a useful starting point instead of guessing your level." : "No course yet. Tell us what you want to learn and we'll build a short plan around your goal and demonstrated starting point."}</p>}
-          <form className="mt-5 flex gap-2" onSubmit={(e) => { e.preventDefault(); makeCourse(); }}>
-            <input value={courseGoal} onChange={(e) => setCourseGoal(e.target.value)} placeholder="e.g. Fractions, Newton's laws, probability" className="min-w-0 flex-1 rounded-lg border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-ring" />
-            <button disabled={creating || !courseGoal.trim() || needsDiagnostic} className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">{creating ? "Building…" : needsDiagnostic ? "Check a concept first" : course ? "New course" : "Build my course"}</button>
-          </form>
-          {err && <p role="alert" className="mt-2 text-sm text-destructive">{err}</p>}
+              </div>
+            </div>
+          ) : course ? <div className="rounded-lg bg-secondary p-3 text-sm"><p>This saved course uses the legacy topic format and has no structured plan. Its topics are still available:</p><ol className="mt-2 list-decimal pl-5">{course.topics.map((topic) => <li key={topic.id} className="mt-1 flex items-center justify-between gap-2"><span>{topic.name} · ~{topic.minutes} min</span><button onClick={() => learn(`${topic.name} (part of: ${course.title})`)} className="rounded bg-background px-2 py-1">Review</button></li>)}</ol><p className="mt-2">Create a new structured plan when you want to continue with phase lessons and saved position.</p></div>
+            : <p className="text-sm text-muted-foreground">{needsDiagnostic ? "Complete one diagnostic first. We'll use what you demonstrate rather than guessing your level." : "Tell us what you want to learn. We'll propose phases and lessons for you to review before saving."}</p>}
+
+          {draft ? (
+            <div className="space-y-4 rounded-xl border-2 border-primary/30 p-4">
+              <div><h3 className="text-lg font-semibold">Review proposed plan: {draft.title}</h3><p className="text-sm text-muted-foreground">{draft.goal}</p></div>
+              {draft.phases.map((phase, index) => <section key={phase.id}><h4 className="font-medium">Phase {index + 1}: {phase.title}</h4><p className="text-sm text-muted-foreground">{phase.purpose}</p><ol className="ml-5 list-decimal text-sm">{phase.topics.map((topic) => <li key={topic.id}>{topic.name} — {topic.objectives.join("; ")}<span className="block text-xs text-muted-foreground">Subtopics: {topic.subtopics.map((item) => item.name).join(", ")}</span></li>)}</ol><p className="mt-1 text-xs text-muted-foreground">Assessment: {phase.assessment.title} — {phase.assessment.purpose}</p></section>)}
+              <div className="flex flex-wrap gap-2"><button disabled={creating} onClick={() => void saveDraft()} className="rounded-lg bg-primary px-4 py-2 font-medium text-primary-foreground disabled:opacity-50">{creating ? "Saving…" : "Start this course"}</button><button disabled={creating} onClick={() => setDraft(null)} className="rounded-lg border px-4 py-2">Discard proposal</button></div>
+            </div>
+          ) : (
+            <form className="space-y-3 border-t pt-4" onSubmit={(event) => { event.preventDefault(); void makeCourse(); }}>
+              <label className="block text-sm font-medium">Learning goal<input value={courseGoal} onChange={(event) => setCourseGoal(event.target.value)} placeholder="e.g. Understand probability for my exam" className="mt-1 w-full rounded-lg border bg-background px-3 py-2" /></label>
+              <label className="block text-sm font-medium">Relevant notes or material<textarea value={courseMaterial} onChange={(event) => setCourseMaterial(event.target.value.slice(0, 6000))} rows={3} placeholder="Paste class notes, syllabus topics or material to use as course context…" className="mt-1 w-full rounded-lg border bg-background p-2" /></label>
+              {visionAvailable && <label className="block text-sm">Add a photo of notes or a worksheet<input type="file" accept="image/jpeg,image/png,image/webp" disabled={reading} onChange={(event) => { const file = event.target.files?.[0]; if (file) void readMaterialPhoto(file); event.currentTarget.value = ""; }} className="mt-1 block w-full text-sm" />{reading && <span className="text-muted-foreground">Reading photo…</span>}</label>}
+              <button disabled={creating || !courseGoal.trim() || needsDiagnostic} className="rounded-lg bg-primary px-4 py-2 font-medium text-primary-foreground disabled:opacity-50">{creating ? "Building proposal…" : needsDiagnostic ? "Check a concept first" : "Build a plan to review"}</button>
+            </form>
+          )}
+          {err && <p role="alert" className="text-sm text-destructive">{err}</p>}
         </section>
 
         <div className="space-y-8">
           <section className="card-paper p-6">
             <h2 className="text-xl font-semibold">Due for review</h2>
-            {due.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">Nothing due. Topics come back here at the right time.</p> : (
-              <ul className="mt-3 space-y-2">
-                {due.map((c) => (
-                  <li key={c.id} className="flex items-center justify-between gap-2 text-sm">
-                    <span className="font-medium">{c.concept}</span>
-                    <span className="flex gap-2"><button onClick={() => learn(c.concept)} className="rounded-md bg-secondary px-2 py-1">Review</button><button onClick={() => dismiss(c)} className="text-muted-foreground underline">Later</button></span>
-                  </li>
-                ))}
-              </ul>
-            )}
+            {due.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">Nothing due. Topics come back here at the right time.</p> : <ul className="mt-3 space-y-2">{due.map((c) => <li key={c.id} className="flex items-center justify-between gap-2 text-sm"><span className="font-medium">{c.concept}</span><span className="flex gap-2"><button onClick={() => learn(c.concept)} className="rounded-md bg-secondary px-2 py-1">Review</button><button onClick={() => dismiss(c)} className="text-muted-foreground underline">Later</button></span></li>)}</ul>}
           </section>
           <section className="card-paper p-6">
             <h2 className="text-xl font-semibold">Your understanding</h2>
-            {concepts.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">Concepts you work on show up here.</p> : (
-              <ul className="mt-3 space-y-4">
-                {concepts.map((c) => (
-                  <li key={c.id} className="text-sm">
-                    <div className="flex items-start justify-between gap-2">
-                      <span className="font-medium">{c.concept}</span>
-                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${statusGroup(c.status) === "done" ? "bg-success text-success-foreground" : statusGroup(c.status) === "developing" ? "bg-secondary" : "bg-accent/20"}`}>{statusGroup(c.status) === "done" ? "Demonstrated" : statusGroup(c.status) === "developing" ? "Developing" : "Needs work"}</span>
-                    </div>
-                    {statusGroup(c.status) !== "done" && c.misconceptions[0] && <p className="mt-1 text-muted-foreground">{c.misconceptions[0]}</p>}
-                    <p className="mt-1 text-xs text-muted-foreground">{c.attempts} attempt{c.attempts === 1 ? "" : "s"} · {c.clean_successes} without hints{c.review_at ? ` · review ${new Date(c.review_at).toLocaleDateString()}` : ""}</p>
-                    {c.last_explanation && <button onClick={() => setOpenExplanation(openExplanation === c.id ? null : c.id)} className="mt-1 text-xs text-accent underline">{openExplanation === c.id ? "Hide" : "See"} last explanation</button>}
-                    {openExplanation === c.id && <p className="mt-2 whitespace-pre-line rounded-md bg-secondary p-3 text-xs">{c.last_explanation}</p>}
-                  </li>
-                ))}
-              </ul>
-            )}
+            {concepts.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">Concepts you work on show up here.</p> : <ul className="mt-3 space-y-4">{concepts.map((c) => <li key={c.id} className="text-sm"><div className="flex items-start justify-between gap-2"><span className="font-medium">{c.concept}</span><span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${statusGroup(c.status) === "done" ? "bg-success text-success-foreground" : statusGroup(c.status) === "developing" ? "bg-secondary" : "bg-accent/20"}`}>{statusGroup(c.status) === "done" ? "Demonstrated" : statusGroup(c.status) === "developing" ? "Developing" : "Needs work"}</span></div>{statusGroup(c.status) !== "done" && c.misconceptions[0] && <p className="mt-1 text-muted-foreground">{c.misconceptions[0]}</p>}<p className="mt-1 text-xs text-muted-foreground">{c.attempts} attempt{c.attempts === 1 ? "" : "s"} · {c.clean_successes} without hints{c.review_at ? ` · review ${new Date(c.review_at).toLocaleDateString()}` : ""}</p>{c.last_explanation && <button onClick={() => setOpenExplanation(openExplanation === c.id ? null : c.id)} className="mt-1 text-xs text-accent underline">{openExplanation === c.id ? "Hide" : "See"} last explanation</button>}{openExplanation === c.id && <p className="mt-2 whitespace-pre-line rounded-md bg-secondary p-3 text-xs">{c.last_explanation}</p>}</li>)}</ul>}
           </section>
         </div>
       </div>
