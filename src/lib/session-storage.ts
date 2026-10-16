@@ -56,6 +56,10 @@ const snapshotSchema = z.object({
 
 export type SessionSnapshot = z.infer<typeof snapshotSchema>;
 
+export function shouldRestoreSession(snapshot: SessionSnapshot, initialTopic?: string): boolean {
+  return !initialTopic?.trim() || (snapshot.stage !== "start" && snapshot.stage !== "done");
+}
+
 export function readSession(storage: Pick<Storage, "getItem">, key: string): SessionSnapshot | null {
   const raw = storage.getItem(key);
   if (!raw) return null;

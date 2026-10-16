@@ -5,6 +5,67 @@ The earlier authentication, course-generation, and assessment phases are on this
 for push status. The learning-helper phase is committed and pushed in `0f01076`. The learner-dashboard phase below
 is committed and pushed in `01461a2`; neither phase has been deployed.
 
+## End-to-end QA and product-readiness review
+
+Review date: 2026-10-16. The review was static/code-level; live browser, Google OAuth, Supabase, and AI-provider
+journeys were unavailable. No deployment or push was performed.
+
+### Confirmed behavior and change
+
+- The guest route supports the diagnostic/practice session and local guest progress, but does not render structured
+  course generation, course lessons, graded phase assignments, or adaptive course progression. Therefore the full
+  requested guest journey cannot be completed on the current UI.
+- A continuity defect was fixed: when a learner explicitly starts a new topic, a saved idle or completed session no
+  longer overrides that requested topic. An unfinished diagnostic, diagnosis, lesson, or transfer session still
+  restores normally. Added a focused regression test for this decision.
+- Signed-in course creation, persisted progress/assessment reads, session restoration, assignment grading,
+  idempotency, helper assessment gates, and owner-scoped server/database paths were inspected in source. Their
+  tests and migrations exist, but source inspection is not runtime verification.
+- Existing course-personalization coverage uses scripted provider responses. It checks differing diagnostic inputs
+  can yield different validated plans; it does not demonstrate live model quality or adaptive behavior in a
+  deployed environment.
+- Security review of the code changes reported no findings. This does not verify applied RLS policies or live
+  cross-user denial. Assignment grading and guest import derive ownership from verified Supabase identity. The
+  tutor endpoint intentionally allows guest use and relies on an in-memory per-IP limiter.
+- No persisted document-upload/storage feature exists. Notes and photo transcription are transient input, so
+  document ownership/security journeys are not currently applicable.
+- Controls and responsive/accessibility patterns were inspected in source, but no interactive browser, keyboard,
+  screen-reader, or mobile viewport test was run. Google OAuth/cancel/expiry, real helper formats, model timeouts,
+  refresh recovery, and live database persistence were likewise not exercised.
+
+### QA changes and verification
+
+- `src/lib/session-storage.ts`: added `shouldRestoreSession` so a requested new topic supersedes an idle/completed
+  snapshot without replacing an in-progress learning session.
+- `src/components/LearnSession.tsx`: uses that decision during local-session hydration.
+- `src/test/session-storage.test.ts`: added regression cases for idle/completed starts, active-session restoration,
+  and restoring a completed session when no new topic was requested.
+- `git diff --check`: passed after the QA change.
+- `npm test -- --run`: attempted; did not execute because `vitest` is unavailable (`node_modules` is absent).
+- `npm run build`: attempted; did not execute because `vite` is unavailable.
+- `npm run typecheck`: unavailable because there is no `typecheck` script in `package.json`. No typecheck was
+  completed. Earlier dependency installation failed in npm's resolver with `Cannot read properties of null
+  (reading 'edgesOut')`; dependencies were not installed.
+- Existing pgTAP RLS/persistence tests, full unit suite, lint, and browser journeys were not run. No test, build,
+  typecheck, live OAuth, live database, or full E2E pass is claimed.
+
+### Readiness and prioritized follow-up
+
+1. The product is **not ready to claim the requested end-to-end journeys or a complete controlled demo**: the guest
+   structured-course/assignment journey is absent, and the hosted auth/database/provider paths have not been
+   exercised. A supervised signed-in demo may be possible only after required services and migrations are
+   configured and manually verified.
+2. In a dependency-enabled environment, run the Vitest suite, lint and production build; add/run a supported
+   TypeScript check. Then apply migrations `0001_guest_progress_import.sql`, `0002_structured_courses.sql`, and
+   `0003_course_assessment_attempts.sql` as appropriate and run their pgTAP tests against a test database.
+3. Manually test Google OAuth and account recovery, guest conversion, same-user/cross-user RLS access, assignment
+   retries and failures, two differently diagnosed learners, helper hint/flowchart/chart modes, and refresh/logout
+   recovery using configured services. Verify mobile and keyboard/screen-reader interactions in a browser.
+4. Guest attempts and active-session snapshots remain browser-local until conversion; signed-in course data is
+   cloud-backed, but unfinished tutor-session snapshots and helper transcripts do not sync across devices.
+   Document upload/storage and document access controls are not implemented. Per-instance in-memory IP limits and
+   the semantic quality of model-generated instruction remain limitations.
+
 ## Current phase: learner dashboard, profile and continuity
 
 The dashboard now summarizes actual saved course, lesson, concept and assessment records. It reuses the current

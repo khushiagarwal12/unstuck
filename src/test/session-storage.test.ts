@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { adoptGuestSession, clearSession, readSession, writeSession, type SessionSnapshot } from "@/lib/session-storage";
+import { adoptGuestSession, clearSession, readSession, shouldRestoreSession, writeSession, type SessionSnapshot } from "@/lib/session-storage";
 
 const snapshot: SessionSnapshot = {
   stage: "diagnosis",
@@ -51,6 +51,13 @@ describe("learning session storage", () => {
     window.localStorage.setItem(key, JSON.stringify({ stage: "done", diag: { correctIndex: 1 } }));
     expect(() => readSession(window.localStorage, key)).toThrow();
     window.localStorage.removeItem(key);
+  });
+
+  it("starts a requested topic instead of restoring an idle or completed session", () => {
+    expect(shouldRestoreSession({ ...snapshot, stage: "done" }, "New topic")).toBe(false);
+    expect(shouldRestoreSession({ ...snapshot, stage: "start" }, "New topic")).toBe(false);
+    expect(shouldRestoreSession(snapshot, "New topic")).toBe(true);
+    expect(shouldRestoreSession({ ...snapshot, stage: "done" })).toBe(true);
   });
 
   it("adopts a guest session for the authenticated user without overwriting an existing session", () => {

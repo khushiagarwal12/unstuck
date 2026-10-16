@@ -4,7 +4,7 @@ import { LessonTools, type Caps } from "@/components/LessonTools";
 import { LearningHelper } from "@/components/LearningHelper";
 import { getCapabilities, readProblem } from "@/lib/google.functions";
 import { shrinkImage } from "@/lib/image";
-import { clearSession, readSession, writeSession } from "@/lib/session-storage";
+import { clearSession, readSession, shouldRestoreSession, writeSession } from "@/lib/session-storage";
 import { askTutor, checkTutorAnswer } from "@/lib/tutor.functions";
 
 type Option = { text: string };
@@ -73,7 +73,7 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit, storageKey
     if (!storageKey) { setHydrated(true); return; }
     try {
       const saved = readSession(window.localStorage, storageKey);
-      if (saved) {
+      if (saved && shouldRestoreSession(saved, initialTopic)) {
         restored.current = true;
         setStage(saved.stage); setTopic(saved.topic); setNotes(saved.notes); setDiag(saved.diag); setPicked(saved.picked);
         setDiagnosticCorrect(saved.diagnosticCorrect); setDiagnosis(saved.diagnosis); setFollowUps(saved.followUps);
