@@ -2,7 +2,67 @@
 
 Update date: 2026-10-16. Worktree branch: `khushiagarwal12-unstuck-auth-diagnostics`.
 The earlier authentication, course-generation, and assessment phases are on this branch; see their commit history
-for push status. The current learning-helper phase is uncommitted and has not been deployed or pushed.
+for push status. The learning-helper phase is committed and pushed in `0f01076`. The learner-dashboard phase below
+is uncommitted and has not been deployed or pushed.
+
+## Current phase: learner dashboard, profile and continuity
+
+The dashboard now summarizes actual saved course, lesson, concept and assessment records. It reuses the current
+Supabase/RLS account data and browser-local guest progress; no new provider, dependency, or database migration was
+added.
+
+### Behavior implemented
+
+- The signed-in dashboard lists saved structured courses, marks active/ready/completed states, shows the current
+  phase and saved unfinished lesson, completed lesson counts, latest assessment result, and last recorded course
+  activity. Its recommended action resumes the most recently active unfinished course, opens the next phase
+  assignment when all its lessons are done, or recommends an actually due concept review.
+- Course completion is derived from saved passing phase-assignment attempts (or saved legacy phase completion),
+  not an invented percentage. Assignment scores remain labeled as assessment evidence, not mastery. Saved concept
+  records separately show demonstrated-under-current-criteria, developing, needs-practice, or unresolved status
+  and explain the evidence/attention reason without presenting a permanent mastery claim.
+- The dashboard shows assessment history across courses and completed lesson names. Due reviews prioritize
+  unresolved/developing records over demonstrated ones and state why the concept is due and when it was last
+  practiced. No streaks or notification prompts were added.
+- Existing account-menu preferences still edit goal, subject, self-reported level, session pace and explanation
+  styles in the persisted profile. Course position and attempts continue to load/save through existing user-owned
+  Supabase tables/RLS, so refreshing or signing back in reads the saved state.
+- Guest users can open a device-local progress view showing only saved completed attempts, last recorded status,
+  and a suggested concept to revisit. It clearly distinguishes local unsynced progress from the signed-in course
+  workspace. Guest deletion removes only guest attempts, the unfinished guest session, and that session's helper
+  transcript from the current browser.
+- Starting a fresh structured course creates a new copy at its first lesson and preserves the original plan,
+  progress, and assessment history. Deleting a course is explicitly confirmed and removes only that owned course
+  (its course progress and assessment attempts cascade with it); concept deletion removes only the selected
+  concept summary/review schedule. Other course and concept records are left intact.
+
+### Files changed
+
+- `src/routes/index.tsx`: guest progress dashboard/deletion, signed-in course summaries and resume navigation,
+  assessment history, clearer concept evidence/reasons, course-copy reset, and scoped course/concept deletion.
+- `src/lib/learner-dashboard.ts` (new): pure course-status, saved-position, due-review ranking and elapsed-practice
+  derivation helpers.
+- `src/test/learner-dashboard.test.ts` (new): empty/new learner, saved-position resume, completion/follow-up
+  criteria, active-course ordering, unresolved concept priority, and elapsed-time derivation.
+- `IMPLEMENTATION_STATUS.md`.
+
+### Verification and limitations
+
+- `git diff --check`: passed.
+- Direct Node 22 assertions against `src/lib/learner-dashboard.ts`: passed for empty/new learner, saved-position
+  resume, assessment follow-up gating, completed courses, active-course ordering, due-gap priority and elapsed
+  practice time. These checks execute the pure dashboard derivation but are not a substitute for the Vitest suite.
+- Focused Vitest (`src/test/learner-dashboard.test.ts`): attempted, but did not execute because `vitest` is not
+  installed; `node_modules` is absent. No dependencies were installed.
+- Lint and production build were attempted but could not start because `eslint` and `vite` are not installed.
+  Typecheck was not run because TypeScript is not installed.
+- Dashboard calculation tests exercise new, returning, completed and unresolved states, but could not be executed
+  in this worktree. No live Supabase/RLS test or browser interaction test was run. Persistence behavior relies on
+  the existing account-scoped course/progress/assessment tables and existing guest local-storage bundle.
+- Guest state remains device/browser-local until sign-in imports completed attempts; guest courses and preferences
+  are not persisted as account data. Resetting a structured course creates a separate copy rather than deleting
+  historical attempts. Individual concept deletion removes the concept summary, not course assessment records.
+- No deployment, commit, or push was performed for this phase.
 
 ## Current phase: persistent contextual AI learning helper
 
@@ -66,7 +126,7 @@ no server-side transcript is retained.
   be pedagogically perfect.
 - Charting is intentionally limited to explicitly labeled numeric rows; it does not infer a dataset from prose,
   formulas, or unlabeled numbers. Existing generated lesson diagrams outside this helper remain unchanged.
-- No dependencies were installed. No deployment, commit, or push was performed for this phase.
+- No dependencies were installed. No deployment was performed. The phase was committed and pushed as `0f01076`.
 
 ## Current phase: end-of-phase assessment and adaptive progression
 

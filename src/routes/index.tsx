@@ -14,6 +14,7 @@ import { evaluateCourseAssignment } from "@/lib/course-assessment.functions";
 import { importGuestProgress } from "@/lib/progress.functions";
 import { appendGuestProgress, clearGuestProgress, GUEST_PROGRESS_KEY, readGuestProgress, type GuestProgressBundle } from "@/lib/guest-progress";
 import { adoptGuestSession } from "@/lib/session-storage";
+import { daysSincePractice, rankDueConcepts, summarizeCourses } from "@/lib/learner-dashboard";
 import { CoachCard } from "@/components/CoachCard";
 import { LearnSession, type SessionRecord } from "@/components/LearnSession";
 
@@ -70,6 +71,8 @@ function Index() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [trial, setTrial] = useState(false);
+  const [guestDashboard, setGuestDashboard] = useState(false);
+  const [guestInitialTopic, setGuestInitialTopic] = useState<string | undefined>();
   const [guestProgress, setGuestProgress] = useState<GuestProgressBundle | null>(null);
   const [guestSaveError, setGuestSaveError] = useState<string | null>(null);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
@@ -114,24 +117,107 @@ function Index() {
   if (!authReady) return <Shell><p className="text-muted-foreground">Loading…</p></Shell>;
   if (!user && trial) return (
     <Shell right={<SignInButton small />}>
-      <div className="mb-6 rounded-lg bg-secondary p-4 text-sm">You're using UNSTUCK as a guest. Your completed progress is saved on this device. <strong>Continue with Google</strong> to bring it to your learning workspace.{guestProgress?.events.length ? ` ${guestProgress.events.length} completed learning ${guestProgress.events.length === 1 ? "attempt is" : "attempts are"} saved.` : ""}</div>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-secondary p-4 text-sm">
+        <p>You're using UNSTUCK as a guest. Progress is saved on this device, not synced to an account. <strong>Continue with Google</strong> to bring completed attempts to your learning workspace.{guestProgress?.events.length ? ` ${guestProgress.events.length} completed ${guestProgress.events.length === 1 ? "attempt is" : "attempts are"} saved.` : ""}</p>
+        <button type="button" onClick={() => setGuestDashboard((shown) => !shown)} className="shrink-0 rounded-md border bg-background px-3 py-1.5">{guestDashboard ? "Continue learning" : "View saved progress"}</button>
+      </div>
       {authNotice && <p role="alert" className="mb-4 text-sm text-destructive">{authNotice}</p>}
       {guestSaveError && <p role="alert" className="mb-4 text-sm text-destructive">{guestSaveError}</p>}
-      <LearnSession storageKey="unstuck.guest-session.v1" onRecord={(r) => {
-        try {
-          const current = guestProgress ?? readGuestProgress(window.localStorage);
-          const next = appendGuestProgress(current, r);
-          window.localStorage.setItem(GUEST_PROGRESS_KEY, JSON.stringify(next));
-          setGuestProgress(next);
-          setGuestSaveError(null);
-        } catch {
-          setGuestSaveError("This attempt couldn't be saved on this device. Please allow local storage and try again.");
-        }
-      }} onExit={() => setTrial(false)} />
+      {guestDashboard ? (
+        <GuestDashboard
+          progress={guestProgress}
+          onContinue={(topic) => { setGuestInitialTopic(topic); setGuestDashboard(false); }}
+          onClear={() => {
+            if (!window.confirm("Delete this device's guest learning attempts and unfinished guest session? Your signed-in learning workspace will not be changed.")) return;
+            try {
+              window.localStorage.removeItem(GUEST_PROGRESS_KEY);
+              window.localStorage.removeItem("unstuck.guest-session.v1");
+              window.localStorage.removeItem("unstuck.helper.v1:unstuck.guest-session.v1");
+              setGuestProgress(readGuestProgress(window.localStorage));
+              setGuestInitialTopic(undefined);
+              setGuestSaveError(null);
+            } catch {
+              setGuestSaveError("Guest data could not be deleted from this device.");
+            }
+          }}
+        />
+      ) : (
+        <LearnSession initialTopic={guestInitialTopic} storageKey="unstuck.guest-session.v1" onRecord={(r) => {
+          try {
+            const current = guestProgress ?? readGuestProgress(window.localStorage);
+            const next = appendGuestProgress(current, r);
+            window.localStorage.setItem(GUEST_PROGRESS_KEY, JSON.stringify(next));
+            setGuestProgress(next);
+            setGuestSaveError(null);
+          } catch {
+            setGuestSaveError("This attempt couldn't be saved on this device. Please allow local storage and try again.");
+          }
+        }} onExit={() => setGuestDashboard(true)} />
+      )}
     </Shell>
   );
-  if (!user) return <Welcome onTry={() => setTrial(true)} authNotice={authNotice} />;
+  if (!user) return <Welcome onTry={() => { setTrial(true); setGuestDashboard(false); }} authNotice={authNotice} />;
   return <SignedIn user={user} onGuestImport={() => setGuestProgress(null)} />;
+}
+
+function GuestDashboard({ progress, onContinue, onClear }: {
+  progress: GuestProgressBundle | null;
+  onContinue: (topic?: string) => void;
+  onClear: () => void;
+}) {
+  const events = progress?.events ?? [];
+  const latestByConcept = new Map<string, GuestProgressBundle["events"][number]>();
+  for (const event of events) {
+    const key = event.record.concept.toLowerCase();
+    const previous = latestByConcept.get(key);
+    if (!previous || Date.parse(event.savedAt) > Date.parse(previous.savedAt)) latestByConcept.set(key, event);
+  }
+  const concepts = Array.from(latestByConcept.values()).sort((a, b) =>
+    Date.parse(b.savedAt) - Date.parse(a.savedAt));
+  const nextConcept = concepts.find((event) => !event.record.status.startsWith("Demonstrated")) ?? concepts[0];
+  return (
+    <div className="space-y-6">
+      <section className="card-paper space-y-3 p-6">
+        <p className="text-xs font-semibold uppercase tracking-widest text-accent">Guest learning snapshot</p>
+        <h1 className="text-3xl font-semibold">Your progress on this device</h1>
+        <p className="text-sm text-muted-foreground">This summary uses only saved guest attempts. It is local to this browser; courses, synced preferences and cross-device history are available after Google sign-in.</p>
+        {events.length === 0 ? (
+          <div className="rounded-lg bg-secondary p-4 text-sm">No completed attempts have been saved yet. Start a learning check and your results will appear here.</div>
+        ) : (
+          <>
+            {nextConcept && (
+              <div className="rounded-lg border p-4">
+                <p className="text-xs font-semibold uppercase tracking-widest text-accent">Suggested next</p>
+                <p className="mt-1 font-medium">{nextConcept.record.status.startsWith("Demonstrated") ? "Revisit" : "Continue practicing"}: {nextConcept.record.concept}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{nextConcept.record.status.startsWith("Demonstrated") ? "Your latest saved attempt met the current criteria; a later recall can check whether it lasts." : "Your latest saved attempt is still developing or unresolved, so another check may help."}</p>
+                <button type="button" onClick={() => onContinue(nextConcept.record.concept)} className="mt-3 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">Continue with this concept</button>
+              </div>
+            )}
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-lg bg-secondary p-3"><p className="text-2xl font-semibold">{events.length}</p><p className="text-xs text-muted-foreground">saved completed attempts</p></div>
+              <div className="rounded-lg bg-secondary p-3"><p className="text-2xl font-semibold">{concepts.filter((event) => event.record.status.startsWith("Demonstrated")).length}</p><p className="text-xs text-muted-foreground">concepts demonstrated under current criteria</p></div>
+              <div className="rounded-lg bg-secondary p-3"><p className="text-2xl font-semibold">{concepts.filter((event) => !event.record.status.startsWith("Demonstrated")).length}</p><p className="text-xs text-muted-foreground">concepts still developing or unresolved</p></div>
+            </div>
+            <section>
+              <h2 className="font-semibold">Recent learning</h2>
+              <ul className="mt-2 divide-y">
+                {events.slice().reverse().slice(0, 8).map((event) => (
+                  <li key={event.id} className="flex flex-wrap justify-between gap-2 py-2 text-sm">
+                    <span><strong>{event.record.concept}</strong> · {event.record.status}{event.record.clean ? " · without hints" : ""}</span>
+                    <time className="text-xs text-muted-foreground" dateTime={event.savedAt}>{new Date(event.savedAt).toLocaleDateString()}</time>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </>
+        )}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+          <button type="button" onClick={() => onContinue()} className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">Start a learning check</button>
+          <button type="button" onClick={onClear} className="text-sm text-destructive underline">Delete guest progress from this device</button>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function Shell({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
@@ -305,6 +391,36 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
     });
   };
 
+  const forgetCourse = (courseId: string): string | null => {
+    setCourses((current) => current.filter((course) => course.id !== courseId));
+    setCourseProgress((current) => {
+      const next = { ...current };
+      delete next[courseId];
+      return next;
+    });
+    setAssessmentAttempts((current) => current.filter((attempt) => attempt.course_id !== courseId));
+    try {
+      const prefixes = [
+        `unstuck.helper.v1:${user.id}:${courseId}:`,
+        `unstuck.course-hints.v1:${user.id}:${courseId}`,
+        `unstuck.course-assessment-pending.v1:${user.id}:${courseId}:`,
+      ];
+      for (let index = window.localStorage.length - 1; index >= 0; index--) {
+        const key = window.localStorage.key(index);
+        if (key && prefixes.some((prefix) => key.startsWith(prefix))) window.localStorage.removeItem(key);
+      }
+    } catch {
+      return "The course was deleted from your account, but some device-local helper history could not be removed.";
+    }
+    return null;
+  };
+
+  const deleteConcept = async (concept: Concept) => {
+    const { error } = await supabase.from("concepts").delete().eq("id", concept.id);
+    if (error) throw new Error("Couldn't delete this concept history. Please try again.");
+    setConcepts((current) => current.filter((item) => item.id !== concept.id));
+  };
+
   const saveCourseProgress = async (courseId: string, patch: CourseProgressPatch) => {
     const previous = courseProgress[courseId];
     const next = {
@@ -371,7 +487,7 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
   );
   return (
     <Shell right={right}>
-      <Dashboard profile={profile} concepts={concepts} courses={courses} courseProgress={courseProgress} saveCourseProgress={saveCourseProgress} assessmentAttempts={assessmentAttempts} gradeAssignment={gradeAssignment} rememberAssessmentAttempt={rememberAssessmentAttempt} ask={ask} prefs={prefs} setCourses={setCourses} userId={user.id}
+      <Dashboard profile={profile} concepts={concepts} courses={courses} courseProgress={courseProgress} saveCourseProgress={saveCourseProgress} assessmentAttempts={assessmentAttempts} gradeAssignment={gradeAssignment} rememberAssessmentAttempt={rememberAssessmentAttempt} ask={ask} prefs={prefs} setCourses={setCourses} userId={user.id} onForgetCourse={forgetCourse} onDeleteConcept={deleteConcept}
         learn={(topic) => setView({ kind: "learn", topic, key: Date.now() })}
         dismiss={async (c) => { const at = new Date(Date.now() + 7 * 86400000).toISOString(); await supabase.from("concepts").update({ review_at: at }).eq("id", c.id); setConcepts((cs) => cs.map((x) => x.id === c.id ? { ...x, review_at: at } : x)); }}
       />
@@ -448,14 +564,16 @@ function Onboarding({ profile, editing, onDone }: { profile: Profile; editing: b
 
 const statusGroup = (s: string) => s.startsWith("Demonstrated") ? "done" : s === "Progressing" ? "developing" : "work";
 
-function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgress, assessmentAttempts, gradeAssignment, rememberAssessmentAttempt, ask, prefs, setCourses, userId, learn, dismiss }: {
+function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgress, assessmentAttempts, gradeAssignment, rememberAssessmentAttempt, ask, prefs, setCourses, userId, onForgetCourse, onDeleteConcept, learn, dismiss }: {
   profile: Profile; concepts: Concept[]; courses: Course[]; courseProgress: Record<string, CourseProgress>;
   saveCourseProgress: (courseId: string, patch: CourseProgressPatch) => Promise<CourseProgress>;
   assessmentAttempts: CourseAssessmentAttempt[];
   gradeAssignment: ReturnType<typeof useServerFn<typeof evaluateCourseAssignment>>;
   rememberAssessmentAttempt: (attempt: CourseAssessmentAttempt) => void;
   ask: ReturnType<typeof useServerFn<typeof askTutor>>; prefs: Record<string, unknown> | undefined;
-  setCourses: React.Dispatch<React.SetStateAction<Course[]>>; userId: string; learn: (t?: string) => void; dismiss: (c: Concept) => void;
+  setCourses: React.Dispatch<React.SetStateAction<Course[]>>; userId: string;
+  onForgetCourse: (courseId: string) => string | null; onDeleteConcept: (concept: Concept) => Promise<void>;
+  learn: (t?: string) => void; dismiss: (c: Concept) => void;
 }) {
   const readPhoto = useServerFn(readProblem);
   const capabilities = useServerFn(getCapabilities);
@@ -465,7 +583,8 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
   const [courseGoal, setCourseGoal] = useState(profile.subject ?? "");
   const [courseMaterial, setCourseMaterial] = useState("");
   const [draft, setDraft] = useState<CoursePlan | null>(null);
-  const [activeCourseId, setActiveCourseId] = useState(courses[0]?.id ?? "");
+  const [activeCourseId, setActiveCourseId] = useState(() =>
+    summarizeCourses(courses, courseProgress, assessmentAttempts)[0]?.course.id ?? courses[0]?.id ?? "");
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
   const [objectiveAnswers, setObjectiveAnswers] = useState<Record<string, number>>({});
   const [writtenAnswers, setWrittenAnswers] = useState<Record<string, string>>({});
@@ -476,13 +595,22 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
   const [submittingPhaseId, setSubmittingPhaseId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [openExplanation, setOpenExplanation] = useState<string | null>(null);
+  const [openAssignmentKey, setOpenAssignmentKey] = useState<string | null>(null);
+  const [showAllAttempts, setShowAllAttempts] = useState(false);
+  const [deletingCourse, setDeletingCourse] = useState(false);
+  const [resettingCourse, setResettingCourse] = useState(false);
+  const [deletingConceptId, setDeletingConceptId] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const course = courses.find((c) => c.id === activeCourseId) ?? courses[0];
   const plan = course?.plan ?? null;
   const progress = course ? courseProgress[course.id] : undefined;
   const byName = new Map(concepts.map((c) => [c.concept.toLowerCase(), c]));
   const needsDiagnostic = concepts.length === 0;
-  const due = concepts.filter((c) => c.review_at && new Date(c.review_at) <= new Date());
+  const due = rankDueConcepts(concepts, Date.now());
   const work = concepts.filter((c) => statusGroup(c.status) === "work");
+  const courseSummaries = summarizeCourses(courses, courseProgress, assessmentAttempts);
+  const activeSummary = courseSummaries.find((summary) => summary.course.id === course?.id);
+  const recentAttempts = assessmentAttempts.slice().sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   const topicEntries = plan?.phases.flatMap((phase) => phase.topics.map((topic) => ({ phase, topic }))) ?? [];
   const completedTopicIds = new Set(progress?.completed_topic_ids ?? []);
   const courseAttempts = assessmentAttempts.filter((attempt) => attempt.course_id === course?.id);
@@ -497,7 +625,6 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
   const currentEntry = topicEntries.find(({ phase, topic }) => phase.id === openPhase?.id && topic.id === activeTopicId)
     ?? topicEntries.find(({ phase, topic }) => phase.id === openPhase?.id && topic.id === progress?.current_topic_id)
     ?? firstOpenEntry;
-  const nextTopic = currentEntry?.topic;
   const last = concepts[0];
   const away = last ? (Date.now() - new Date(last.updated_at).getTime()) / 86400000 : 0;
   const hintStorageKey = `unstuck.course-hints.v1:${userId}:${course?.id ?? "none"}`;
@@ -539,6 +666,78 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
       ...current,
       [phaseId]: Array.from(new Set([...(current[phaseId] ?? []), questionId])),
     }));
+  };
+
+  const resetCourse = async () => {
+    if (!course?.plan || resettingCourse) return;
+    if (!window.confirm(`Start a fresh copy of "${course.title}"? Its existing lessons, progress, and assessment history will remain saved.`)) return;
+    setResettingCourse(true); setErr(null);
+    const firstPhase = course.plan.phases[0];
+    const firstTopic = firstPhase?.topics[0];
+    if (!firstPhase || !firstTopic) {
+      setErr("This course has no saved starting lesson to reset to.");
+      setResettingCourse(false);
+      return;
+    }
+    const { data, error } = await supabase.from("courses").insert({
+      user_id: userId,
+      title: course.title,
+      goal: course.goal,
+      outcomes: course.outcomes,
+      topics: course.topics,
+      plan: course.plan,
+    }).select().single();
+    if (error || !data) {
+      setErr("Couldn't create a fresh course copy. Your saved course and progress are unchanged.");
+      setResettingCourse(false);
+      return;
+    }
+    const freshCourse = { ...data, plan: course.plan, topics: course.topics } as unknown as Course;
+    setCourses((current) => [freshCourse, ...current]);
+    setActiveCourseId(freshCourse.id);
+    setActiveTopicId(firstTopic.id);
+    try {
+      await saveCourseProgress(freshCourse.id, {
+        current_phase_id: firstPhase.id,
+        current_topic_id: firstTopic.id,
+      });
+      setErr(null);
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : "A fresh course copy was saved, but its starting position couldn't be saved.");
+    } finally {
+      setResettingCourse(false);
+    }
+  };
+
+  const deleteCourse = async () => {
+    if (!course || deletingCourse) return;
+    if (!window.confirm(`Delete "${course.title}", its saved position, and its assessment attempts? This cannot be undone. Other courses and concept history will remain.`)) return;
+    setDeletingCourse(true); setErr(null);
+    const { data, error } = await supabase.from("courses").delete().eq("id", course.id).eq("user_id", userId).select("id").single();
+    if (error || !data) {
+      setErr("Couldn't delete this course. Its saved plan and progress are unchanged.");
+      setDeletingCourse(false);
+      return;
+    }
+    const cleanupNotice = onForgetCourse(course.id);
+    const remaining = courseSummaries.find((summary) => summary.course.id !== course.id)?.course;
+    setActiveCourseId(remaining?.id ?? "");
+    setActiveTopicId(null);
+    if (cleanupNotice) setErr(cleanupNotice);
+    setDeletingCourse(false);
+  };
+
+  const removeConcept = async (concept: Concept) => {
+    if (deletingConceptId) return;
+    if (!window.confirm(`Delete the saved concept summary and review schedule for "${concept.concept}"? Course and assessment history will remain.`)) return;
+    setDeletingConceptId(concept.id); setHistoryError(null);
+    try {
+      await onDeleteConcept(concept);
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "Couldn't delete this concept history.");
+    } finally {
+      setDeletingConceptId(null);
+    }
   };
 
   const makeCourse = async () => {
@@ -603,10 +802,15 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
   async function startCourse(selected: Course) {
     if (!selected.plan) return;
     const entries = selected.plan.phases.flatMap((phase) => phase.topics.map((topic) => ({ phase, topic })));
-    const covered = entries.filter(({ topic }) => hasDemonstratedCover(topic)).map(({ topic }) => topic.id);
     const previous = courseProgress[selected.id];
+    const covered = previous ? [] : entries.filter(({ topic }) => hasDemonstratedCover(topic)).map(({ topic }) => topic.id);
     const completed = Array.from(new Set([...(previous?.completed_topic_ids ?? []), ...covered]));
-    const completedPhases = completedPhaseIds;
+    const selectedAttempts = assessmentAttempts.filter((attempt) => attempt.course_id === selected.id);
+    const usesGraded = selected.plan.phases.every((phase) => !!phase.assessment.answerToken);
+    const completedPhases = new Set([
+      ...(!usesGraded ? previous?.completed_phase_ids ?? [] : []),
+      ...selectedAttempts.filter((attempt) => attempt.evaluation.passed && !attempt.evaluation.needsFollowUp).map((attempt) => attempt.phase_id),
+    ]);
     const openPhase = selected.plan.phases.find((phase) => !completedPhases.has(phase.id));
     const savedPosition = entries.find(({ phase, topic }) => phase.id === openPhase?.id && topic.id === previous?.current_topic_id && !completed.includes(topic.id));
     const next = savedPosition ?? openPhase?.topics.find((topic) => !completed.includes(topic.id));
@@ -649,24 +853,26 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
 
   const submitAssessment = async (phase: CoursePlan["phases"][number]) => {
     if (!course || !phase.assessment.answerToken || submittingPhaseId || readyHintStorageKey !== hintStorageKey) return;
+    const submissionKey = `${course.id}:${phase.id}`;
     const priorResults = courseAttempts.filter((attempt) => attempt.phase_id === phase.id);
     const latest = priorResults[0];
     const objectiveQs = phase.assessment.objectiveQuestions ?? [];
     const openQs = phase.assessment.openQuestions ?? [];
     const objectives = Object.fromEntries(objectiveQs.map((question) => [
       question.id,
-      objectiveAnswers[`${phase.id}:${question.id}`],
+      objectiveAnswers[`${course.id}:${phase.id}:${question.id}`],
     ]));
     const written = Object.fromEntries(openQs.map((question) => {
-      const base = writtenAnswers[`${phase.id}:${question.id}`] ?? "";
-      const followUp = followUpAnswers[`${phase.id}:${question.id}`]?.trim();
+      const responseKey = `${course.id}:${phase.id}:${question.id}`;
+      const base = writtenAnswers[responseKey] ?? "";
+      const followUp = followUpAnswers[responseKey]?.trim();
       const followUpQuestion = latest?.evaluation.followUpQuestionId === question.id ? latest.evaluation.followUpQuestion : null;
       return [question.id, followUpQuestion && followUp
         ? `${base}\n\nFollow-up question: ${followUpQuestion}\nLearner follow-up: ${followUp}`
         : base];
     }));
     const storageKey = `unstuck.course-assessment-pending.v1:${userId}:${course.id}:${phase.id}`;
-    let attemptId = pendingAttemptIds[phase.id];
+    let attemptId = pendingAttemptIds[submissionKey];
     if (!attemptId) {
       try {
         const stored = window.localStorage.getItem(storageKey);
@@ -678,8 +884,8 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
         return;
       }
     }
-    setPendingAttemptIds((current) => ({ ...current, [phase.id]: attemptId }));
-    setSubmittingPhaseId(phase.id); setErr(null);
+    setPendingAttemptIds((current) => ({ ...current, [submissionKey]: attemptId }));
+    setSubmittingPhaseId(submissionKey); setErr(null);
     try {
       const attempt = await gradeAssignment({ data: {
         attemptId,
@@ -699,12 +905,12 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
       }
       setPendingAttemptIds((current) => {
         const next = { ...current };
-        delete next[phase.id];
+        delete next[submissionKey];
         return next;
       });
       setFollowUpAnswers((current) => {
         const next = { ...current };
-        for (const question of openQs) delete next[`${phase.id}:${question.id}`];
+        for (const question of openQs) delete next[`${course.id}:${phase.id}:${question.id}`];
         return next;
       });
       setUsedHints((current) => ({ ...current, [phase.id]: [] }));
@@ -732,10 +938,60 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
     finally { setReading(false); }
   };
 
-  const nextAction = due[0] ? { label: `Quick recall: ${due[0].concept}`, why: away > 3 ? "Welcome back — a short recap before moving on." : "It's time to check this one stuck.", go: () => learn(due[0]!.concept) }
-    : nextTopic && course ? { label: `Next in your course: ${nextTopic.name}`, why: nextTopic.why, go: () => { if (currentEntry) void selectTopic(currentEntry.phase.id, nextTopic.id); } }
-    : work[0] ? { label: `Keep working on: ${work[0].concept}`, why: "This one still needs practice.", go: () => learn(work[0]!.concept) }
-    : { label: "Get unstuck on something new", why: "Bring a question or concept that's bugging you.", go: () => learn() };
+  const goToCourseNext = (summary: (typeof courseSummaries)[number]) => {
+    const action = summary.next;
+    if (!action || action.kind === "complete") return;
+    setActiveCourseId(summary.course.id);
+    if (action.kind === "topic") {
+      void saveCourseProgress(summary.course.id, {
+        current_phase_id: action.phaseId,
+        current_topic_id: action.topic.id,
+      }).then(() => {
+        setActiveTopicId(action.topic.id);
+        setErr(null);
+      }).catch((error) => setErr(error instanceof Error ? error.message : "Couldn't save your course position."));
+      return;
+    }
+    setActiveTopicId(null);
+    const assignmentKey = `${summary.course.id}:${action.phaseId}`;
+    setOpenAssignmentKey(assignmentKey);
+    window.setTimeout(() => {
+      const details = document.getElementById(`phase-assignment-${assignmentKey}`);
+      if (details) {
+        details.open = true;
+        details.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 0);
+  };
+
+  const nextDue = due[0];
+  const daysSinceNextReview = nextDue ? daysSincePractice(nextDue.updated_at, Date.now()) : null;
+  const recommendedCourse = courseSummaries.find((summary) => !summary.completed && summary.next) ?? null;
+  const nextAction = nextDue ? {
+    label: `Short revision: ${nextDue.concept}`,
+    why: `${nextDue.status === "Progressing" ? "Your last attempt was developing" : nextDue.status.startsWith("Demonstrated") ? "This concept met the current criteria" : nextDue.status === "Not assessed" ? "There isn't enough saved evidence yet" : "Your recorded work still needs practice"}; its review date has arrived. Last practiced ${daysSinceNextReview} day${daysSinceNextReview === 1 ? "" : "s"} ago.`,
+    go: () => learn(nextDue.concept),
+  } : recommendedCourse?.next?.kind === "topic" ? {
+    label: `Resume ${recommendedCourse.course.title}: ${recommendedCourse.next.topic.name}`,
+    why: `${recommendedCourse.next.topic.name} is the next unfinished lesson in ${recommendedCourse.phaseTitle ?? "your course"}.`,
+    go: () => goToCourseNext(recommendedCourse),
+  } : recommendedCourse?.next?.kind === "assessment" ? {
+    label: `Complete ${recommendedCourse.next.phaseTitle} assessment`,
+    why: "The phase lessons are complete; this assignment is the next course step.",
+    go: () => goToCourseNext(recommendedCourse),
+  } : work[0] ? {
+    label: `Practice: ${work[0].concept}`,
+    why: "Your saved learning record marks this concept as needing more practice.",
+    go: () => learn(work[0]!.concept),
+  } : concepts.length ? {
+    label: "Choose what to learn next",
+    why: "Your saved concepts met their current criteria. You can revisit one later or start a new topic.",
+    go: () => learn(),
+  } : {
+    label: "Start a learning check",
+    why: "Bring a question or concept that's bugging you.",
+    go: () => learn(),
+  };
 
   return (
     <div className="space-y-8">
@@ -746,8 +1002,51 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
 
       <CoachCard userId={userId} firstName={profile.display_name?.split(" ")[0] ?? null} prefs={prefs} concepts={concepts} dueCount={due.length} daysAway={away} />
 
+      <section className="card-paper p-6" aria-labelledby="course-overview-heading">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h2 id="course-overview-heading" className="text-xl font-semibold">What you're learning</h2>
+            <p className="mt-1 text-sm text-muted-foreground">Course position and lesson completion come from your saved progress; assessment completion is shown separately.</p>
+          </div>
+          {profile.subject && <p className="text-sm"><span className="text-muted-foreground">Focus:</span> {profile.subject}{profile.goal ? ` · ${profile.goal}` : ""}</p>}
+        </div>
+        {courseSummaries.length === 0 ? (
+          <p className="mt-4 rounded-lg bg-secondary p-4 text-sm">No saved courses yet. Start a learning check, then build a course plan when you're ready.</p>
+        ) : (
+          <ul className="mt-4 grid gap-3 md:grid-cols-2">
+            {courseSummaries.map((summary) => {
+              const nextTopic = summary.next?.kind === "topic" ? summary.next.topic : null;
+              const isSelected = summary.course.id === course?.id;
+              return (
+                <li key={summary.course.id} className={`rounded-lg border p-4 ${isSelected ? "border-primary/50 bg-secondary/40" : ""}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="font-semibold">{summary.course.title}</h3>
+                      <p className="mt-1 text-sm text-muted-foreground">{!summary.course.plan ? "Saved legacy course" : summary.completed ? "Completed by phase-assignment criteria" : summary.started ? `Current phase: ${summary.phaseTitle ?? "In progress"}` : "Not started"}</p>
+                    </div>
+                    <span className="shrink-0 rounded-full bg-secondary px-2 py-1 text-xs">{!summary.course.plan ? "Saved" : summary.completed ? "Complete" : summary.started ? "Active" : "Ready"}</span>
+                  </div>
+                  {summary.course.plan && <p className="mt-2 text-xs text-muted-foreground">{summary.completedTopicCount} of {summary.topicCount} lessons completed · {summary.attemptCount} assessment attempt{summary.attemptCount === 1 ? "" : "s"}{summary.lastActivityAt ? ` · last activity ${new Date(summary.lastActivityAt).toLocaleDateString()}` : ""}</p>}
+                  {nextTopic && <p className="mt-2 text-sm">Left off at: <strong>{nextTopic.name}</strong></p>}
+                  {summary.next?.kind === "assessment" && <p className="mt-2 text-sm">Next: <strong>{summary.next.phaseTitle} assignment</strong></p>}
+                  {summary.latestAttempt && <p className="mt-1 text-xs text-muted-foreground">Latest assessment: {summary.latestAttempt.evaluation.score}/{summary.latestAttempt.evaluation.maxScore} ({summary.latestAttempt.evaluation.percentage}%) · {summary.latestAttempt.evaluation.passed ? "passed" : "needs another step"}; not a mastery score.</p>}
+                  <button type="button" onClick={() => {
+                    setActiveCourseId(summary.course.id);
+                    if (summary.next?.kind === "topic" || summary.next?.kind === "assessment") goToCourseNext(summary);
+                    else {
+                      setActiveTopicId(null);
+                      document.getElementById("learning-journey")?.scrollIntoView({ behavior: "smooth" });
+                    }
+                  }} className="mt-3 rounded-md bg-secondary px-3 py-1.5 text-sm">{summary.completed ? "Review course" : summary.started ? "Resume" : "Open plan"}</button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
       <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr]">
-        <section className="card-paper space-y-5 p-6">
+        <section id="learning-journey" className="card-paper space-y-5 p-6">
           <div>
             <h2 className="text-xl font-semibold">Your learning journey</h2>
             <p className="mt-1 text-sm text-muted-foreground">A course is saved as a new plan, so revising never overwrites completed work.</p>
@@ -763,9 +1062,17 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
             <div className="rounded-xl border p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div><h3 className="text-lg font-semibold">{course.title}</h3><p className="text-sm text-muted-foreground">{course.goal}</p><p className="mt-1 text-xs text-muted-foreground">{plan.phases.every((phase) => completedPhaseIds.has(phase.id)) ? "Course complete by phase-assignment criteria; this is separate from independently demonstrated mastery." : "Phase assignments measure course progress; independent mastery is tracked separately through learning attempts."}</p></div>
-                <button onClick={() => void startCourse(course)} className="rounded-md bg-secondary px-3 py-1.5 text-sm">Resume course</button>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => void startCourse(course)} className="rounded-md bg-secondary px-3 py-1.5 text-sm">{plan.phases.every((phase) => completedPhaseIds.has(phase.id)) ? "Review course" : "Resume course"}</button>
+                  <button type="button" disabled={resettingCourse} onClick={() => void resetCourse()} className="rounded-md border px-3 py-1.5 text-sm disabled:opacity-50">{resettingCourse ? "Starting fresh…" : "Start fresh copy"}</button>
+                  <button type="button" disabled={deletingCourse} onClick={() => void deleteCourse()} className="rounded-md border border-destructive/40 px-3 py-1.5 text-sm text-destructive disabled:opacity-50">{deletingCourse ? "Deleting…" : "Delete course"}</button>
+                </div>
               </div>
               <ul className="mt-3 flex flex-wrap gap-2">{plan.outcomes.map((outcome) => <li key={outcome} className="rounded-full bg-secondary px-3 py-1 text-xs">{outcome}</li>)}</ul>
+              {!!activeSummary?.completedTopicCount && <details className="mt-3 rounded-md bg-secondary/50 p-3 text-sm">
+                <summary className="cursor-pointer font-medium">Completed lessons ({activeSummary.completedTopicCount})</summary>
+                <ul className="mt-2 list-disc pl-5 text-muted-foreground">{topicEntries.filter(({ topic }) => completedTopicIds.has(topic.id)).map(({ phase, topic }) => <li key={topic.id}>{phase.title}: {topic.name}</li>)}</ul>
+              </details>}
               <div className="mt-5 space-y-5">
                 {plan.phases.map((phase, phaseIndex) => {
                   const phaseUnlocked = plan.phases.slice(0, phaseIndex).every((previousPhase) => completedPhaseIds.has(previousPhase.id));
@@ -773,14 +1080,15 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
                   const latestAttempt = phaseAttempts[0];
                   const objectiveQuestions = phase.assessment.objectiveQuestions ?? [];
                   const openQuestions = phase.assessment.openQuestions ?? [];
+                  const assignmentKey = `${course.id}:${phase.id}`;
                   const followUpId = latestAttempt?.evaluation.followUpQuestionId;
                   const assignmentReady = phaseUnlocked &&
                     phase.topics.every((topic) => completedTopicIds.has(topic.id)) &&
-                    objectiveQuestions.every((question) => objectiveAnswers[`${phase.id}:${question.id}`] !== undefined) &&
-                    openQuestions.every((question) => (writtenAnswers[`${phase.id}:${question.id}`] ?? "").trim().length > 0) &&
-                    (!followUpId || (followUpAnswers[`${phase.id}:${followUpId}`] ?? "").trim().length > 0) &&
+                    objectiveQuestions.every((question) => objectiveAnswers[`${course.id}:${phase.id}:${question.id}`] !== undefined) &&
+                    openQuestions.every((question) => (writtenAnswers[`${course.id}:${phase.id}:${question.id}`] ?? "").trim().length > 0) &&
+                    (!followUpId || (followUpAnswers[`${course.id}:${phase.id}:${followUpId}`] ?? "").trim().length > 0) &&
                     readyHintStorageKey === hintStorageKey &&
-                    submittingPhaseId !== phase.id;
+                    submittingPhaseId !== `${course.id}:${phase.id}`;
                   return (
                   <section key={phase.id} className="border-l-2 pl-4">
                     <div className="flex items-start justify-between gap-2"><div><h4 className="font-semibold">Phase {phaseIndex + 1}: {phase.title}</h4><p className="text-sm text-muted-foreground">{phase.purpose}</p></div><span className="text-xs text-muted-foreground">{completedPhaseIds.has(phase.id) ? "Assessment complete" : "In progress"}</span></div>
@@ -815,13 +1123,16 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
                         </li>;
                       })}
                     </ol>
-                    <details className="mt-3 rounded-lg bg-secondary/50 p-3">
+                    <details id={`phase-assignment-${assignmentKey}`} open={openAssignmentKey === assignmentKey} onToggle={(event) => {
+                      if (event.currentTarget.open) setOpenAssignmentKey(assignmentKey);
+                      else setOpenAssignmentKey((current) => current === assignmentKey ? null : current);
+                    }} className="mt-3 rounded-lg bg-secondary/50 p-3">
                       <summary className="cursor-pointer font-medium">{phase.assessment.title} — phase assignment</summary>
                       <p className="mt-2 text-sm text-muted-foreground">{phase.assessment.purpose}</p>
                       {phase.assessment.answerToken ? (
                         <>
                           {objectiveQuestions.map((question) => {
-                            const hintKey = `${phase.id}:${question.id}`;
+                            const hintKey = `${course.id}:${phase.id}:${question.id}`;
                             const selectedIndex = objectiveAnswers[hintKey];
                             const selectedAnswer = selectedIndex === undefined ? null : question.options[selectedIndex] ?? null;
                             const hintShown = (usedHints[phase.id] ?? []).includes(question.id);
@@ -846,7 +1157,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
                             </fieldset>;
                           })}
                           {openQuestions.map((question) => {
-                            const responseKey = `${phase.id}:${question.id}`;
+                            const responseKey = `${course.id}:${phase.id}:${question.id}`;
                             const followUpPending = latestAttempt?.evaluation.followUpQuestionId === question.id;
                             const hintShown = (usedHints[phase.id] ?? []).includes(question.id);
                             const relatedTopic = phase.topics.find((topic) => topic.objectives.some((objective) => objective.toLowerCase() === question.objective.toLowerCase()));
@@ -871,7 +1182,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
                           })}
                           <p className="mt-3 text-sm"><strong>Phase criteria:</strong> {phase.assessment.passCriteria}</p>
                           <p className="mt-3 text-xs text-muted-foreground">Complete all phase lessons first. Assessment score, phase completion, and independently demonstrated mastery are recorded separately. Hints and retries count; repeating this assignment does not establish transfer or mastery.</p>
-                          <button disabled={!assignmentReady} onClick={() => void submitAssessment(phase)} className="mt-3 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">{submittingPhaseId === phase.id ? "Grading and saving…" : "Submit assignment"}</button>
+                          <button disabled={!assignmentReady} onClick={() => void submitAssessment(phase)} className="mt-3 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">{submittingPhaseId === `${course.id}:${phase.id}` ? "Grading and saving…" : "Submit assignment"}</button>
                           {phaseAttempts.map((attempt, attemptIndex) => {
                             const missedObjective = [
                               ...attempt.evaluation.objectiveResults.filter((result) => !result.correct).map((result) => result.objective),
@@ -903,7 +1214,14 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
                 })}
               </div>
             </div>
-          ) : course ? <div className="rounded-lg bg-secondary p-3 text-sm"><p>This saved course uses the legacy topic format and has no structured plan. Its topics are still available:</p><ol className="mt-2 list-decimal pl-5">{course.topics.map((topic) => <li key={topic.id} className="mt-1 flex items-center justify-between gap-2"><span>{topic.name} · ~{topic.minutes} min</span><button onClick={() => learn(`${topic.name} (part of: ${course.title})`)} className="rounded bg-background px-2 py-1">Review</button></li>)}</ol><p className="mt-2">Create a new structured plan when you want to continue with phase lessons and saved position.</p></div>
+          ) : course ? <div className="rounded-lg bg-secondary p-3 text-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <p>This saved course uses the legacy topic format and has no structured plan. Its topics are still available:</p>
+              <button type="button" disabled={deletingCourse} onClick={() => void deleteCourse()} className="rounded-md border border-destructive/40 px-3 py-1.5 text-sm text-destructive disabled:opacity-50">{deletingCourse ? "Deleting…" : "Delete course"}</button>
+            </div>
+            <ol className="mt-2 list-decimal pl-5">{course.topics.map((topic) => <li key={topic.id} className="mt-1 flex items-center justify-between gap-2"><span>{topic.name} · ~{topic.minutes} min</span><button onClick={() => learn(`${topic.name} (part of: ${course.title})`)} className="rounded bg-background px-2 py-1">Review</button></li>)}</ol>
+            <p className="mt-2">Create a new structured plan when you want to continue with phase lessons and saved position.</p>
+          </div>
             : <p className="text-sm text-muted-foreground">{needsDiagnostic ? "Complete one diagnostic first. We'll use what you demonstrate rather than guessing your level." : "Tell us what you want to learn. We'll propose phases and lessons for you to review before saving."}</p>}
 
           {draft ? (
@@ -930,10 +1248,54 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
           </section>
           <section className="card-paper p-6">
             <h2 className="text-xl font-semibold">Your understanding</h2>
-            {concepts.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">Concepts you work on show up here.</p> : <ul className="mt-3 space-y-4">{concepts.map((c) => <li key={c.id} className="text-sm"><div className="flex items-start justify-between gap-2"><span className="font-medium">{c.concept}</span><span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${statusGroup(c.status) === "done" ? "bg-success text-success-foreground" : statusGroup(c.status) === "developing" ? "bg-secondary" : "bg-accent/20"}`}>{statusGroup(c.status) === "done" ? "Demonstrated" : statusGroup(c.status) === "developing" ? "Developing" : "Needs work"}</span></div>{statusGroup(c.status) !== "done" && c.misconceptions[0] && <p className="mt-1 text-muted-foreground">{c.misconceptions[0]}</p>}<p className="mt-1 text-xs text-muted-foreground">{c.attempts} attempt{c.attempts === 1 ? "" : "s"} · {c.clean_successes} without hints{c.review_at ? ` · review ${new Date(c.review_at).toLocaleDateString()}` : ""}</p>{c.last_explanation && <button onClick={() => setOpenExplanation(openExplanation === c.id ? null : c.id)} className="mt-1 text-xs text-accent underline">{openExplanation === c.id ? "Hide" : "See"} last explanation</button>}{openExplanation === c.id && <p className="mt-2 whitespace-pre-line rounded-md bg-secondary p-3 text-xs">{c.last_explanation}</p>}</li>)}</ul>}
+            {concepts.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">No learning attempts recorded yet. Concepts appear here after a completed check.</p> : <ul className="mt-3 space-y-4">{concepts.map((c) => {
+              const group = statusGroup(c.status);
+              const rationale = group === "done"
+                ? "Two clean answers in different contexts met the current criteria. This is a learning signal, not a permanent or universal mastery claim."
+                : group === "developing"
+                  ? "The latest recorded attempt was correct, but more clean evidence in a different context is needed."
+                  : c.status === "Not assessed"
+                    ? "There is not enough saved evidence to describe this concept as demonstrated."
+                    : "The saved learning record indicates this concept needs another practice attempt.";
+              return <li key={c.id} className="text-sm">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="font-medium">{c.concept}</span>
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${group === "done" ? "bg-success text-success-foreground" : group === "developing" ? "bg-secondary" : "bg-accent/20"}`}>{group === "done" ? "Demonstrated under current criteria" : group === "developing" ? "Developing" : c.status === "Not assessed" ? "Unresolved" : "Needs more practice"}</span>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">{rationale}</p>
+                {group !== "done" && c.misconceptions[0] && <p className="mt-1 text-xs text-muted-foreground">Possible gap noted during diagnosis: {c.misconceptions[0]}</p>}
+                <p className="mt-1 text-xs text-muted-foreground">{c.attempts} attempt{c.attempts === 1 ? "" : "s"} · {c.clean_successes} without hints · last practiced {daysSincePractice(c.updated_at, Date.now())} day{daysSincePractice(c.updated_at, Date.now()) === 1 ? "" : "s"} ago{c.review_at ? ` · next review ${new Date(c.review_at).toLocaleDateString()}` : ""}</p>
+                {c.last_explanation && <button onClick={() => setOpenExplanation(openExplanation === c.id ? null : c.id)} className="mt-1 text-xs text-accent underline">{openExplanation === c.id ? "Hide" : "See"} last explanation</button>}
+                {openExplanation === c.id && <p className="mt-2 whitespace-pre-line rounded-md bg-secondary p-3 text-xs">{c.last_explanation}</p>}
+                <button type="button" disabled={deletingConceptId === c.id} onClick={() => void removeConcept(c)} className="mt-2 text-xs text-destructive underline disabled:opacity-50">{deletingConceptId === c.id ? "Deleting…" : "Delete this concept record"}</button>
+              </li>;
+            })}</ul>}
+            {historyError && <p role="alert" className="mt-3 text-sm text-destructive">{historyError}</p>}
           </section>
         </div>
       </div>
+      <section className="card-paper p-6" aria-labelledby="assessment-history-heading">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div><h2 id="assessment-history-heading" className="text-xl font-semibold">Assessment history</h2><p className="mt-1 text-sm text-muted-foreground">Scores show assignment performance only; they do not establish independent concept mastery.</p></div>
+          {recentAttempts.length > 6 && <button type="button" onClick={() => setShowAllAttempts((shown) => !shown)} className="text-sm text-accent underline">{showAllAttempts ? "Show recent only" : `Show all ${recentAttempts.length} attempts`}</button>}
+        </div>
+        {recentAttempts.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">No phase-assignment attempts saved yet.</p> : (
+          <ol className="mt-3 divide-y">
+            {recentAttempts.slice(0, showAllAttempts ? recentAttempts.length : 6).map((attempt) => {
+              const attemptCourse = courses.find((item) => item.id === attempt.course_id);
+              const phase = attemptCourse?.plan?.phases.find((item) => item.id === attempt.phase_id);
+              return <li key={attempt.attempt_id} className="py-3">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <p className="font-medium">{attemptCourse?.title ?? "Saved course"} · {phase?.title ?? "Phase assignment"}</p>
+                  <time className="text-xs text-muted-foreground" dateTime={attempt.created_at}>{new Date(attempt.created_at).toLocaleString()}</time>
+                </div>
+                <p className="mt-1 text-sm">{attempt.evaluation.score}/{attempt.evaluation.maxScore} points ({attempt.evaluation.percentage}%) · {attempt.evaluation.passed ? "phase criteria met" : "more work recommended"} · {attempt.evaluation.recommendedAction.replace(/-/g, " ")}{attempt.evaluation.needsFollowUp ? " · reasoning follow-up needed" : ""}</p>
+                {!attempt.evaluation.passed && attempt.evaluation.nextSteps.length > 0 && <p className="mt-1 text-xs text-muted-foreground">Recommended: {attempt.evaluation.nextSteps.join(" ")}</p>}
+              </li>;
+            })}
+          </ol>
+        )}
+      </section>
     </div>
   );
 }
