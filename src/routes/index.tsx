@@ -5,6 +5,7 @@ import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
 import { askTutor } from "@/lib/tutor.functions";
+import { CoachCard } from "@/components/CoachCard";
 import { LearnSession, type SessionRecord } from "@/components/LearnSession";
 
 export const Route = createFileRoute("/")({
@@ -334,6 +335,8 @@ function Dashboard({ profile, concepts, courses, ask, prefs, setCourses, userId,
           <button onClick={() => learn()} className="rounded-lg border px-5 py-2.5">I'm stuck on something else</button>
         </div>
       </section>
+
+      <CoachCard userId={userId} firstName={profile.display_name?.split(" ")[0] ?? null} prefs={prefs} concepts={concepts} dueCount={due.length} daysAway={away} />
 
       <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr]">
         <section className="card-paper p-6">
