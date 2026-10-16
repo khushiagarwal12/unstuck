@@ -3,15 +3,16 @@ import { useEffect, useRef, useState } from "react";
 import { LessonTools, type Caps } from "@/components/LessonTools";
 import { getCapabilities, readProblem } from "@/lib/google.functions";
 import { shrinkImage } from "@/lib/image";
-import { askTutor } from "@/lib/tutor.functions";
+import { clearSession, readSession, writeSession } from "@/lib/session-storage";
+import { askTutor, checkTutorAnswer } from "@/lib/tutor.functions";
 
-type Option = { text: string; misconception: string | null };
-type Diag = { concept: string; question: string; options: Option[]; correctIndex: number; why: string };
+type Option = { text: string };
+type Diag = { concept: string; question: string; options: Option[]; answerToken: string; why: string };
 type Hyp = { label: string; summary: string; confidence: "low" | "medium" | "high" };
-type Diagnosis = { hypotheses: Hyp[]; needsFollowUp: boolean; followUp: { question: string; options: string[]; why: string } | null; recommendedStyle: Style };
+type Diagnosis = { demonstrated: string[]; hypotheses: Hyp[]; unresolved: string[]; needsFollowUp: boolean; followUp: { question: string; options: string[]; why: string } | null; recommendedStyle: Style };
 type Style = "visual" | "example" | "hint" | "simpler" | "analogy" | "prerequisite";
 type Lesson = { title: string; body: string; diagram: string | null; steps: string[]; style: Style };
-type Transfer = { question: string; options: string[]; correctIndex: number; context: string; explanation: string };
+type Transfer = { question: string; options: string[]; answerToken: string; context: string; explanation?: string };
 export type Status = "Not assessed" | "Needs more practice" | "Progressing" | "Demonstrated under current criteria";
 export type SessionRecord = { concept: string; status: Status; misconceptions: string[]; styles: Style[]; hintsUsed: number; correct: boolean; clean: boolean; explanation: string | null };
 
@@ -38,8 +39,9 @@ const STAGES: { id: Stage; label: string }[] = [
   { id: "transfer", label: "Verify" },
 ];
 
-export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initialTopic?: string; prefs?: Record<string, unknown>; onRecord?: (r: SessionRecord) => void; onExit?: () => void }) {
+export function LearnSession({ initialTopic, prefs, onRecord, onExit, storageKey }: { initialTopic?: string; prefs?: Record<string, unknown>; onRecord?: (r: SessionRecord) => void; onExit?: () => void; storageKey?: string }) {
   const ask = useServerFn(askTutor);
+  const checkAnswer = useServerFn(checkTutorAnswer);
   const readPhoto = useServerFn(readProblem);
   const loadCaps = useServerFn(getCapabilities);
   const [caps, setCaps] = useState<Caps>({ vision: false, speech: false, translate: false, video: false });
@@ -51,6 +53,7 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initia
   const [notes, setNotes] = useState("");
   const [diag, setDiag] = useState<Diag | null>(null);
   const [picked, setPicked] = useState<number | null>(null);
+  const [diagnosticCorrect, setDiagnosticCorrect] = useState<boolean | null>(null);
   const [diagnosis, setDiagnosis] = useState<Diagnosis | null>(null);
   const [followUps, setFollowUps] = useState<{ q: string; a: string }[]>([]);
   const [disputed, setDisputed] = useState<string[]>([]);
@@ -60,12 +63,50 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initia
   const [tPick, setTPick] = useState<number | null>(null);
   const [history, setHistory] = useState<{ context: string; correct: boolean; clean: boolean }[]>([]);
   const [loading, setLoading] = useState<string | null>(null);
-  const [error, setError] = useState<{ msg: string; retry: () => void } | null>(null);
+  const [error, setError] = useState<{ msg: string; retry?: () => void } | null>(null);
+  const [hydrated, setHydrated] = useState(!storageKey);
   const started = useRef(false);
+  const restored = useRef(false);
+  const restoreFailed = useRef(false);
   useEffect(() => {
-    if (initialTopic && !started.current) { started.current = true; start(initialTopic); }
+    if (!storageKey) { setHydrated(true); return; }
+    try {
+      const saved = readSession(window.localStorage, storageKey);
+      if (saved) {
+        restored.current = true;
+        setStage(saved.stage); setTopic(saved.topic); setNotes(saved.notes); setDiag(saved.diag); setPicked(saved.picked);
+        setDiagnosticCorrect(saved.diagnosticCorrect); setDiagnosis(saved.diagnosis); setFollowUps(saved.followUps);
+        setDisputed(saved.disputed); setLesson(saved.lesson); setStyles(saved.styles); setTransfer(saved.transfer);
+        setTPick(saved.tPick); setHistory(saved.history);
+      }
+    } catch {
+      restoreFailed.current = true;
+      setError({ msg: "We couldn't restore this saved session. It remains on this device." });
+    } finally {
+      setHydrated(true);
+    }
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!hydrated || !storageKey || restoreFailed.current) return;
+    try {
+      if (stage === "start" && !topic.trim() && !diag) {
+        clearSession(window.localStorage, storageKey);
+        return;
+      }
+      writeSession(window.localStorage, storageKey, {
+        stage, topic, notes, diag, picked, diagnosticCorrect, diagnosis, followUps, disputed,
+        lesson, styles, transfer, tPick, history,
+      });
+    } catch {
+      setError({ msg: "This session couldn't be saved on this device. Allow local storage to keep your place." });
+    }
+  }, [hydrated, storageKey, stage, topic, notes, diag, picked, diagnosticCorrect, diagnosis, followUps, disputed, lesson, styles, transfer, tPick, history]);
+
+  useEffect(() => {
+    if (hydrated && !restoreFailed.current && !restored.current && initialTopic && !started.current) { started.current = true; start(initialTopic); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialTopic]);
+  }, [initialTopic, hydrated]);
 
   async function call<T>(label: string, action: "start" | "diagnose" | "intervene" | "transfer", payload: Record<string, unknown>, onOk: (r: T) => void) {
     if (loading) return;
@@ -79,9 +120,13 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initia
     } finally { setLoading(null); }
   }
 
-  const baseCtx = () => ({ topic, learnerPreferences: prefs, notes: notes.slice(0, 6000) || undefined, concept: diag?.concept, diagnosticQuestion: diag?.question, learnerAnswer: picked != null ? diag?.options[picked]?.text : undefined, correctAnswer: diag ? diag.options[diag.correctIndex]?.text : undefined });
+  const baseCtx = () => ({ topic, learnerPreferences: prefs, notes: notes.slice(0, 6000) || undefined, concept: diag?.concept, diagnosticQuestion: diag?.question, diagnosticOptions: diag?.options.map((option) => option.text), learnerAnswer: picked != null ? diag?.options[picked]?.text : undefined, diagnosticCorrect });
 
   const start = (t = topic) => {
+    restoreFailed.current = false;
+    if (storageKey) {
+      try { clearSession(window.localStorage, storageKey); } catch { setError({ msg: "We couldn't replace the saved session on this device." }); return; }
+    }
     setTopic(t);
     reset(false);
     call<Diag>("Preparing a quick check…", "start", { stuckOn: t, learnerPreferences: prefs, notes: notes.slice(0, 6000) || undefined }, (r) => { setDiag(r); setStage("diagnostic"); });
@@ -98,20 +143,42 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initia
   };
 
   const reset = (full = true) => {
-    setDiag(null); setPicked(null); setDiagnosis(null); setFollowUps([]); setDisputed([]); setLesson(null); setStyles([]); setTransfer(null); setTPick(null); setHistory([]); setError(null);
-    if (full) { setStage("start"); setTopic(""); onExit?.(); }
+    setDiag(null); setPicked(null); setDiagnosticCorrect(null); setDiagnosis(null); setFollowUps([]); setDisputed([]); setLesson(null); setStyles([]); setTransfer(null); setTPick(null); setHistory([]); setError(null);
+    if (full) {
+      if (storageKey) try { clearSession(window.localStorage, storageKey); } catch { setError({ msg: "We couldn't clear the saved session on this device." }); }
+      restored.current = false;
+      setStage("start"); setTopic(""); onExit?.();
+    }
   };
 
-  const runDiagnose = (fu = followUps, disp = disputed) =>
-    call<Diagnosis>("Weighing what might be going on…", "diagnose", { ...baseCtx(), followUpAnswers: fu, disputedHypotheses: disp, followUpCount: fu.length }, (r) => {
+  const runDiagnose = (fu = followUps, disp = disputed, observedCorrect = diagnosticCorrect) =>
+    call<Diagnosis>("Weighing what might be going on…", "diagnose", { ...baseCtx(), diagnosticCorrect: observedCorrect, followUpAnswers: fu, disputedHypotheses: disp, followUpCount: fu.length }, (r) => {
       setDiagnosis(r); setStage("diagnosis");
     });
 
-  const submitDiag = () => {
+  const verifyAnswer = async (kind: "diagnostic" | "transfer", answerToken: string, choice: number) => {
+    if (loading) return null;
+    const retry = () => {
+      if (kind === "diagnostic") void submitDiag();
+      else void answerTransfer();
+    };
+    setLoading("Checking your answer…"); setError(null);
+    try {
+      return await checkAnswer({ data: { kind, answerToken, choice } });
+    } catch (e) {
+      setError({ msg: e instanceof Error ? e.message : "Something went wrong", retry });
+      return null;
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const submitDiag = async () => {
     if (picked == null || !diag) return;
-    if (picked === diag.correctIndex) {
-      getTransfer([]);
-    } else runDiagnose();
+    const result = await verifyAnswer("diagnostic", diag.answerToken, picked);
+    if (!result) return;
+    setDiagnosticCorrect(result.correct);
+    runDiagnose(followUps, disputed, result.correct);
   };
 
   const teach = (style: Style) =>
@@ -120,7 +187,11 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initia
     });
 
   const getTransfer = (h = history) =>
-    call<Transfer>("Writing a fresh question…", "transfer", { ...baseCtx(), previousTransferContexts: h.map((x) => x.context) }, (r) => {
+    call<Transfer>("Writing a fresh question…", "transfer", {
+      ...baseCtx(),
+      previousTransferContexts: h.map((x) => x.context),
+      previousTransferResults: h.map(({ context, correct, clean }) => ({ context, correct, clean })),
+    }, (r) => {
       setTransfer(r); setTPick(null); setStage("transfer");
     });
 
@@ -128,9 +199,12 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initia
   const cleanStreak = (() => { let n = 0; for (let i = history.length - 1; i >= 0 && history[i]?.clean; i--) n++; return n; })();
   const status: Status = history.length === 0 ? "Not assessed" : cleanStreak >= 2 && new Set(history.slice(-2).map((h) => h.context)).size === 2 ? "Demonstrated under current criteria" : history[history.length - 1]?.correct ? "Progressing" : "Needs more practice";
 
-  const answerTransfer = () => {
+  const answerTransfer = async () => {
     if (tPick == null || !transfer || !diag) return;
-    const correct = tPick === transfer.correctIndex;
+    const result = await verifyAnswer("transfer", transfer.answerToken, tPick);
+    if (!result) return;
+    const correct = result.correct;
+    setTransfer({ ...transfer, explanation: result.explanation });
     const h = [...history, { context: transfer.context, correct, clean: correct && !usedHint }];
     setHistory(h);
     const st: Status = (() => { let n = 0; for (let i = h.length - 1; i >= 0 && h[i]?.clean; i--) n++; return n >= 2 && new Set(h.slice(-2).map((x) => x.context)).size === 2 ? "Demonstrated under current criteria" : correct ? "Progressing" : "Needs more practice"; })();
@@ -153,7 +227,7 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initia
           {error && (
             <div role="alert" className="mb-4 flex items-center justify-between gap-4 rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm">
               <span>{error.msg}</span>
-              <button onClick={error.retry} className="rounded-md bg-destructive px-3 py-1.5 text-destructive-foreground">Retry</button>
+              {error.retry && <button onClick={error.retry} className="rounded-md bg-destructive px-3 py-1.5 text-destructive-foreground">Retry</button>}
             </div>
           )}
           {loading && <div className="mb-4 flex items-center gap-3 text-muted-foreground" aria-live="polite"><span className="h-2 w-2 animate-ping rounded-full bg-accent" />{loading}</div>}
@@ -192,12 +266,18 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initia
             <Card kicker="Quick check" why={diag.why}>
               <h2 className="text-2xl font-semibold">{diag.question}</h2>
               <Choices options={diag.options.map((o) => o.text)} picked={picked} onPick={setPicked} />
-              <Primary disabled={picked == null || !!loading} onClick={submitDiag}>Check my answer</Primary>
+              <Primary disabled={picked == null || !!loading} onClick={() => { void submitDiag(); }}>Check my answer</Primary>
             </Card>
           )}
 
           {stage === "diagnosis" && diagnosis && (
             <Card kicker="What might be going on" why="Your answer tells us something. These are our best guesses — not verdicts.">
+              <section className="mb-5 rounded-lg bg-secondary p-4">
+                <h2 className="font-semibold">What your answers show</h2>
+                {diagnosis.demonstrated.length ? (
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">{diagnosis.demonstrated.map((item, i) => <li key={i}>{item}</li>)}</ul>
+                ) : <p className="mt-2 text-sm text-muted-foreground">We don't have enough evidence to identify a concept you have demonstrated yet.</p>}
+              </section>
               <ul className="space-y-3">
                 {diagnosis.hypotheses.filter((h) => !disputed.includes(h.label)).map((h, i) => (
                   <li key={h.label} className={`rounded-lg border p-4 ${i === 0 ? "border-accent bg-accent/10" : ""}`}>
@@ -209,6 +289,12 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initia
                   </li>
                 ))}
               </ul>
+              {diagnosis.unresolved.length > 0 && (
+                <section className="mt-5 border-t pt-4">
+                  <h3 className="text-sm font-semibold">Still uncertain</h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted-foreground">{diagnosis.unresolved.map((item, i) => <li key={i}>{item}</li>)}</ul>
+                </section>
+              )}
               {diagnosis.needsFollowUp && diagnosis.followUp ? (
                 <FollowUp fu={diagnosis.followUp} disabled={!!loading} onAnswer={(a) => { const f = [...followUps, { q: diagnosis.followUp!.question, a }]; setFollowUps(f); runDiagnose(f); }} />
               ) : (
@@ -243,14 +329,14 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit }: { initia
             <Card kicker={`New context · ${transfer.context}`} why="Same idea, different situation. No hints this time — that's how we know it stuck.">
               <h2 className="text-2xl font-semibold">{transfer.question}</h2>
               <Choices options={transfer.options} picked={tPick} onPick={setTPick} />
-              <Primary disabled={tPick == null || !!loading} onClick={answerTransfer}>Submit</Primary>
+              <Primary disabled={tPick == null || !!loading} onClick={() => { void answerTransfer(); }}>Submit</Primary>
             </Card>
           )}
 
           {stage === "done" && transfer && (
             <Card kicker="Result" why="">
               {history[history.length - 1]?.correct ? <h2 className="text-3xl font-semibold text-success">Nice — that's right.</h2> : <h2 className="text-3xl font-semibold">Not quite yet.</h2>}
-              <p className="mt-3 leading-relaxed">{transfer.explanation}</p>
+              {transfer.explanation && <p className="mt-3 leading-relaxed">{transfer.explanation}</p>}
               <p className="mt-5 rounded-lg bg-secondary p-4 text-sm"><strong>{status}.</strong>{" "}
                 {status === "Demonstrated under current criteria" ? "Two clean answers in different contexts without hints. Come back later to make sure it lasts." : `We look for two correct answers in a row, in different contexts, without hints${usedHint ? " (you used a hint this session — that's fine, it just doesn't count as a clean answer)" : ""}.`}
               </p>

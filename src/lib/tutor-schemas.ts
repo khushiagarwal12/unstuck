@@ -29,10 +29,12 @@ export const transferSchema = z
   .refine((q) => distinct(q.options), { message: "options must be different" });
 
 export const diagnoseSchema = z.object({
+  demonstrated: z.array(text(300)).max(4),
   hypotheses: z
     .array(z.object({ label: text(120), summary: text(400), confidence: z.enum(["low", "medium", "high"]) }))
     .min(1)
     .max(3),
+  unresolved: z.array(text(300)).max(4),
   needsFollowUp: z.boolean(),
   followUp: z
     .object({ question: text(500), options: z.array(text(300)).min(2).max(4), why: text(300) })
@@ -89,7 +91,18 @@ export function normalize(action: Action, value: unknown, payload: Record<string
     const d = value as z.infer<typeof diagnoseSchema>;
     const asked = Number(payload["followUpCount"] ?? 0);
     const wants = d.needsFollowUp && d.followUp !== null && asked < MAX_FOLLOW_UPS;
-    return { ...d, needsFollowUp: wants, followUp: wants ? d.followUp : null };
+    const observedAnswers = (typeof payload["learnerAnswer"] === "string" ? 1 : 0) +
+      (Array.isArray(payload["followUpAnswers"]) ? Math.min(payload["followUpAnswers"].length, MAX_FOLLOW_UPS) : 0);
+    const maxConfidence = observedAnswers < 2 ? "low" : observedAnswers < 3 ? "medium" : "high";
+    const confidenceRank = { low: 0, medium: 1, high: 2 } as const;
+    const disputed = new Set(Array.isArray(payload["disputedHypotheses"]) ? payload["disputedHypotheses"] : []);
+    const hypotheses = d.hypotheses.map((h) => ({
+      ...h,
+      confidence: disputed.has(h.label)
+        ? "low"
+        : confidenceRank[h.confidence] > confidenceRank[maxConfidence] ? maxConfidence : h.confidence,
+    }));
+    return { ...d, hypotheses, needsFollowUp: wants, followUp: wants ? d.followUp : null };
   }
   if (action === "course") {
     // A prerequisite may only point at an earlier topic, so the plan can be followed in order.

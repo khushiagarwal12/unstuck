@@ -1,9 +1,122 @@
-# UNSTUCK: implementation status and architecture audit
+# UNSTUCK: current implementation status
 
-Audit date: 2026-10-16. Branch audited: `main` at `9aef5cf` (same as `origin/main` after `git fetch`).
-Scope: read-only audit. Nothing was migrated, rewritten, deployed or pushed, and billing was not touched.
-Method: inspected the code, `package.json`, env files, Dockerfile, build output and git history. Cloud consoles
-and the live service could not be reached from the audit sandbox, so anything about them is marked **Assumption**.
+Update date: 2026-10-16. Worktree branch: `khushiagarwal12-unstuck-auth-diagnostics`.
+Scope: authentication/user continuity and diagnostic-learning changes. No deployment, push, commit, billing change,
+or provider migration was performed. The historical audit below describes the earlier baseline and is not a report
+of this worktree's validation.
+
+## Current phase: authentication continuity and diagnostic learning
+
+### Architecture in this worktree
+
+- Authentication remains Lovable Auth over Supabase; Google OAuth is still the configured sign-in path. Firebase is
+  not used or introduced.
+- Profiles, courses, and concepts remain in Supabase Postgres with the existing per-user RLS policies. The guest
+  progress import is a verified-auth server function; its database function derives the owner from `auth.uid()` and
+  never accepts a client-supplied owner id.
+- Guest progress and unfinished learning-session state are stored in browser local storage. Google sign-in imports
+  completed guest attempts into the authenticated account atomically and idempotently, then adopts an unfinished
+  guest session into the user's local session slot if that slot is empty.
+- Diagnostic and transfer answer keys are removed from responses to the browser. The server issues an encrypted,
+  expiring token and checks the submitted choice; transfer explanations are released only after submission.
+- AI generation remains in the existing server-only tutor functions and provider module. The learning flow now
+  records diagnostic correctness before generating a tentative diagnosis, and course creation is gated on at least
+  one completed diagnostic/practice attempt.
+
+### Files changed
+
+- `.env.example`
+- `drizzle/migrations/0001_guest_progress_import.sql`
+- `src/components/LearnSession.tsx`
+- `src/integrations/supabase/types.ts`
+- `src/lib/answer-key.server.ts`
+- `src/lib/guest-progress.ts`
+- `src/lib/progress.functions.ts`
+- `src/lib/session-storage.ts`
+- `src/lib/tutor.functions.ts`
+- `src/lib/tutor-prompts.ts`
+- `src/lib/tutor-schemas.ts`
+- `src/routes/index.tsx`
+- `src/test/answer-key.test.ts`
+- `src/test/guest-progress.test.ts`
+- `src/test/session-storage.test.ts`
+- `src/test/tutor-core.test.ts`
+- `supabase/tests/0001_auth_and_guest_progress.test.sql`
+- `IMPLEMENTATION_STATUS.md`
+
+No dependency manifest or lockfile was changed.
+
+### Implemented behavior
+
+- The homepage explicitly offers **Continue with Google** and **Continue as Guest**. Sign-in start failures, provider
+  cancellation, auth initialization failures, sign-out failures, and an ended auth session have visible messages.
+- Guest completed attempts persist locally and are shown in the guest banner. Local conversion batches have stable
+  conversion IDs; the SQL function records a per-user receipt and merges concepts in the same transaction, preventing
+  duplicate imports on retry. RLS and the function use the verified Supabase identity for ownership.
+- Guest and signed-in unfinished sessions are persisted locally. A guest's active session is transferred into the
+  signed-in user's local session slot only when that user has no saved session already.
+- Diagnostic and transfer answer indices are no longer returned by the tutor server function. An encrypted answer token
+  expires after 24 hours; transfer explanation text is returned by the answer checker only after submission.
+- Diagnosis now runs after either a correct or incorrect first response. Prompts distinguish self-report from
+  observed answers, require tentative claims under uncertainty, account for disputed hypotheses, and request
+  discriminating follow-ups. Confidence is capped at low with fewer than two observed answers, medium with two, and
+  hypotheses explicitly disputed by the learner are capped at low. The result separates demonstrated knowledge,
+  likely hypotheses, and unresolved questions.
+- A personalized course cannot be generated until the learner has completed one diagnostic/practice attempt; course
+  prompts use observed diagnostic and demonstrated-concept evidence when available.
+
+### Verification results
+
+- **Unit tests:** not run. `npm test -- --run` could not find `vitest`.
+- **Build:** not run. `npm run build` could not find `vite`.
+- **Typecheck:** not run. `node_modules/.bin/tsc.cmd` is absent.
+- **Dependency installation:** Bun is unavailable. `npm install --no-package-lock` failed in npm's resolver with
+  `Cannot read properties of null (reading 'edgesOut')`; dependencies remain unavailable. No test/build/typecheck
+  result is claimed as passing.
+- **Database tests:** `supabase/tests/0001_auth_and_guest_progress.test.sql` adds pgTAP coverage for anonymous import
+  rejection, authenticated import, idempotent retry, and cross-user read/write denial. It was not run because the
+  database tooling/dependencies are unavailable and no live database was inspected.
+- **Repository state:** read-only change overview showed no changes before implementation and shows the tracked
+  implementation diff now. Git shell status/history commands were denied by the environment, so exact HEAD/status
+  could not be independently confirmed after editing. No commit or push was made.
+
+### Setup required before deploying this phase
+
+- Generate a random `QUESTION_SIGNING_SECRET` of at least 32 characters (for example, `openssl rand -base64 32`) and
+  configure it as a server-side secret in the existing Lovable/Cloud Run environment. Never expose it as a `VITE_`
+  variable. Without it, question-answer verification fails closed.
+- Apply `drizzle/migrations/0001_guest_progress_import.sql` to the configured Supabase database using the project's
+  existing Drizzle migration process before relying on guest conversion.
+- Enable/configure Google OAuth in the existing Lovable Auth project and allow the deployed app's callback/redirect
+  URL. No Firebase project or Firebase-specific setup is required for this stack.
+
+### Prioritized remaining work and limitations
+
+1. Apply the database migration and run the new pgTAP tests plus the Vitest suite, typecheck, and production build in
+   an environment with the project dependencies and configured Supabase database.
+2. Configure `QUESTION_SIGNING_SECRET` and manually verify Google OAuth success/cancel, expired sessions, guest
+   conversion, and returning-user session recovery against the deployed Lovable Auth/Supabase setup.
+3. Guest progress and active-session snapshots are device/browser-local until Google sign-in; clearing browser
+   storage before conversion loses that local-only data. Signed-in course/progress records are cloud-backed, while
+   unfinished learning-session snapshots currently remain local to that browser rather than syncing across devices.
+4. Answer-token replay prevention caches the first submitted choice/result in memory per process (same-choice
+   retries are idempotent). Serverless instances do not share that cache; a durable one-use token store is needed if
+   cross-instance replay resistance is required.
+5. Aggregate attempts, hints, and outcomes persist, but detailed answer-by-answer diagnostic/follow-up history is
+   not yet retained in cloud storage after an active session is finished.
+6. Signed-in profile/concept/course CRUD outside guest conversion still uses direct Supabase client calls protected
+   by the existing RLS rules. Those policies constrain ownership, but no live cross-user database integration run
+   was possible here.
+7. A single diagnostic response is intentionally insufficient for high-confidence hypotheses; additional evidence
+   and learner challenges should continue to be surfaced as uncertainty, not treated as confirmed misconceptions.
+
+---
+
+# Historical architecture audit (baseline)
+
+Audit date: 2026-10-16. The earlier audit inspected `main` at `9aef5cf` (reported equal to `origin/main` then).
+It was a read-only audit; its build/test results and assumptions are historical and are not validation of the current
+worktree changes. Cloud consoles and the live service were not reached during that audit.
 
 Legend: **Verified** = seen in the repo or reproduced locally. **Assumption** = not checked, or reported by someone.
 
@@ -130,6 +243,8 @@ Verified in the tree:
 - That a Docker build of this repo succeeds.
 - Whether Lovable still auto-publishes from this repository.
 
-## 7. Status of requested work
-- "Discard Lovable from everywhere": started, then stopped at your audit request. No files were changed. Items 5 and 11 above are the plan; the data and auth swap depends on your answer to item 5.
-- Nothing pushed. This file is the only change from the audit.
+## 7. Historical audit disposition
+- The earlier request to "Discard Lovable from everywhere" was paused pending an architecture decision. This task
+  explicitly requires preserving the configured provider; the current changes therefore keep Lovable Auth/Supabase
+  and do not attempt a Firebase migration.
+- Historical audit recommendations remain contextual and should not be mistaken for work completed in this phase.

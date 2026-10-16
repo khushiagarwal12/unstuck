@@ -5,6 +5,9 @@ import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
 import { askTutor } from "@/lib/tutor.functions";
+import { importGuestProgress } from "@/lib/progress.functions";
+import { appendGuestProgress, clearGuestProgress, GUEST_PROGRESS_KEY, readGuestProgress, type GuestProgressBundle } from "@/lib/guest-progress";
+import { adoptGuestSession } from "@/lib/session-storage";
 import { CoachCard } from "@/components/CoachCard";
 import { LearnSession, type SessionRecord } from "@/components/LearnSession";
 
@@ -40,25 +43,68 @@ function Index() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [trial, setTrial] = useState(false);
+  const [guestProgress, setGuestProgress] = useState<GuestProgressBundle | null>(null);
+  const [guestSaveError, setGuestSaveError] = useState<string | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
 
   useEffect(() => {
+    let hadUser = false;
+    let receivedAuthEvent = false;
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      receivedAuthEvent = true;
+      if (session?.user) {
+        hadUser = true;
+        setAuthNotice(null);
+        try { adoptGuestSession(window.localStorage, session.user.id); } catch {
+          setAuthNotice("Your guest session is still saved on this device, but we couldn't move it into your account automatically.");
+        }
+      } else if (hadUser) {
+        setAuthNotice("Your sign-in session ended. Continue with Google to reopen your learning workspace.");
+        hadUser = false;
+      }
       setUser(session?.user ?? null);
       setAuthReady(true);
     });
-    supabase.auth.getUser().then(({ data }) => { setUser(data.user ?? null); setAuthReady(true); });
+    supabase.auth.getUser().then(({ data, error }) => {
+      if (receivedAuthEvent) return;
+      setUser(data.user ?? null);
+      hadUser = !!data.user;
+      if (error) setAuthNotice("We couldn't confirm your sign-in. Please try Google sign-in again.");
+      setAuthReady(true);
+    }).catch(() => {
+      if (receivedAuthEvent) return;
+      setAuthNotice("We couldn't confirm your sign-in. Please check your connection and try Google sign-in again.");
+      setAuthReady(true);
+    });
+    try {
+      setGuestProgress(readGuestProgress(window.localStorage));
+    } catch {
+      setGuestSaveError("We couldn't read saved guest progress on this device. It has not been deleted.");
+    }
     return () => sub.subscription.unsubscribe();
   }, []);
 
   if (!authReady) return <Shell><p className="text-muted-foreground">Loading…</p></Shell>;
   if (!user && trial) return (
     <Shell right={<SignInButton small />}>
-      <div className="mb-6 rounded-lg bg-secondary p-4 text-sm">You're trying UNSTUCK as a guest. <strong>Sign in with Google</strong> to save what you learn.</div>
-      <LearnSession onExit={() => setTrial(false)} />
+      <div className="mb-6 rounded-lg bg-secondary p-4 text-sm">You're using UNSTUCK as a guest. Your completed progress is saved on this device. <strong>Continue with Google</strong> to bring it to your learning workspace.{guestProgress?.events.length ? ` ${guestProgress.events.length} completed learning ${guestProgress.events.length === 1 ? "attempt is" : "attempts are"} saved.` : ""}</div>
+      {authNotice && <p role="alert" className="mb-4 text-sm text-destructive">{authNotice}</p>}
+      {guestSaveError && <p role="alert" className="mb-4 text-sm text-destructive">{guestSaveError}</p>}
+      <LearnSession storageKey="unstuck.guest-session.v1" onRecord={(r) => {
+        try {
+          const current = guestProgress ?? readGuestProgress(window.localStorage);
+          const next = appendGuestProgress(current, r);
+          window.localStorage.setItem(GUEST_PROGRESS_KEY, JSON.stringify(next));
+          setGuestProgress(next);
+          setGuestSaveError(null);
+        } catch {
+          setGuestSaveError("This attempt couldn't be saved on this device. Please allow local storage and try again.");
+        }
+      }} onExit={() => setTrial(false)} />
     </Shell>
   );
-  if (!user) return <Welcome onTry={() => setTrial(true)} />;
-  return <SignedIn user={user} />;
+  if (!user) return <Welcome onTry={() => setTrial(true)} authNotice={authNotice} />;
+  return <SignedIn user={user} onGuestImport={() => setGuestProgress(null)} />;
 }
 
 function Shell({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
@@ -78,10 +124,14 @@ function SignInButton({ small }: { small?: boolean }) {
   const [err, setErr] = useState<string | null>(null);
   const go = async () => {
     setBusy(true); setErr(null);
-    const r = await lovable.auth.signInWithOAuth("google", { redirect_uri: window.location.origin });
-    if (r.error) { setErr("Sign-in didn't finish. Please try again."); setBusy(false); return; }
-    if (r.redirected) return;
-    setBusy(false);
+    try {
+      const r = await lovable.auth.signInWithOAuth("google", { redirect_uri: window.location.origin });
+      if (r.error) { setErr("Google sign-in didn't finish. Please try again."); setBusy(false); return; }
+      if (!r.redirected) setBusy(false);
+    } catch {
+      setErr("Google sign-in couldn't be started. Check your connection and try again.");
+      setBusy(false);
+    }
   };
   return (
     <div className={small ? "" : "flex flex-col items-start gap-2"}>
@@ -104,16 +154,23 @@ function GoogleMark() {
   );
 }
 
-function Welcome({ onTry }: { onTry: () => void }) {
+function Welcome({ onTry, authNotice }: { onTry: () => void; authNotice?: string | null }) {
+  const [authError, setAuthError] = useState("");
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const error = params.get("error");
+    if (error) setAuthError(error === "access_denied" ? "Google sign-in was cancelled. You can try again or continue as a guest." : "Google sign-in couldn't be completed. Please try again or continue as a guest.");
+  }, []);
   return (
     <Shell>
       <section className="grid gap-12 pt-10 md:grid-cols-[1.3fr_1fr] md:items-center">
         <div>
           <h1 className="text-5xl font-semibold leading-[1.05] md:text-6xl">Understand what you <em className="text-accent">don't</em> understand.</h1>
           <p className="mt-5 max-w-xl text-lg text-muted-foreground">UNSTUCK finds why a concept isn't clicking, teaches it a different way, and checks you can use it on your own — then remembers what you've learned.</p>
+          {(authError || authNotice) && <p role="alert" className="mt-4 text-sm text-destructive">{authError || authNotice}</p>}
           <div className="mt-8 flex flex-wrap items-center gap-4">
             <SignInButton />
-            <button onClick={onTry} className="text-sm underline underline-offset-4 hover:text-accent">Try a lesson first</button>
+            <button onClick={onTry} className="rounded-lg border px-5 py-3 font-medium hover:bg-secondary">Continue as Guest</button>
           </div>
         </div>
         <ol className="card-paper space-y-4 p-6 text-sm">
@@ -126,17 +183,31 @@ function Welcome({ onTry }: { onTry: () => void }) {
   );
 }
 
-function SignedIn({ user }: { user: User }) {
+function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => void }) {
   const ask = useServerFn(askTutor);
+  const importProgress = useServerFn(importGuestProgress);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [concepts, setConcepts] = useState<Concept[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
   const [view, setView] = useState<View>({ kind: "home" });
   const [menu, setMenu] = useState(false);
 
   const load = useCallback(async () => {
     setLoadErr(null);
+    try {
+      const guest = readGuestProgress(window.localStorage);
+      if (guest.events.length > 0) {
+        await importProgress({ data: { conversionId: guest.conversionId, events: guest.events } });
+        clearGuestProgress(window.localStorage, guest.conversionId, guest.events.map((event) => event.id));
+        onGuestImport();
+      }
+    } catch (error) {
+      setLoadErr(error instanceof Error ? error.message : "We couldn't safely import your guest progress. It is still saved on this device.");
+      return;
+    }
     const [p, c, k] = await Promise.all([
       supabase.from("profiles").select("*").eq("id", user.id).maybeSingle(),
       supabase.from("concepts").select("*").order("updated_at", { ascending: false }),
@@ -151,7 +222,7 @@ function SignedIn({ user }: { user: User }) {
     setProfile(prof);
     setConcepts((c.data ?? []) as Concept[]);
     setCourses((k.data ?? []) as unknown as Course[]);
-  }, [user]);
+  }, [user, importProgress, onGuestImport]);
   useEffect(() => { load(); }, [load]);
 
   const prefs = profile ? { goal: profile.goal, subject: profile.subject, selfReportedLevel: profile.level, studyMinutesPerSession: profile.study_minutes, preferredStyles: profile.preferred_styles } : undefined;
@@ -177,7 +248,17 @@ function SignedIn({ user }: { user: User }) {
     if (data) setConcepts((cs) => [data as Concept, ...cs.filter((c) => c.id !== (data as Concept).id)]);
   };
 
-  const signOut = async () => { await supabase.auth.signOut(); };
+  const signOut = async () => {
+    setSigningOut(true);
+    try {
+      const { error } = await supabase.auth.signOut();
+      setAuthError(error ? "We couldn't sign you out. Please try again." : null);
+    } catch {
+      setAuthError("We couldn't sign you out. Please check your connection and try again.");
+    } finally {
+      setSigningOut(false);
+    }
+  };
 
   const right = (
     <div className="relative">
@@ -188,9 +269,10 @@ function SignedIn({ user }: { user: User }) {
       {menu && (
         <div className="card-paper absolute right-0 z-10 mt-2 w-56 p-2 text-sm">
           <p className="truncate px-3 py-2 text-muted-foreground">{user.email}</p>
+          {authError && <p role="alert" className="px-3 py-2 text-destructive">{authError}</p>}
           <button className="block w-full rounded-md px-3 py-2 text-left hover:bg-secondary" onClick={() => { setView({ kind: "home" }); setMenu(false); }}>Dashboard</button>
           <button className="block w-full rounded-md px-3 py-2 text-left hover:bg-secondary" onClick={() => { setView({ kind: "settings" }); setMenu(false); }}>Learning preferences</button>
-          <button className="block w-full rounded-md px-3 py-2 text-left hover:bg-secondary" onClick={signOut}>Sign out</button>
+          <button className="block w-full rounded-md px-3 py-2 text-left hover:bg-secondary disabled:opacity-50" onClick={signOut} disabled={signingOut}>{signingOut ? "Signing out…" : "Sign out"}</button>
         </div>
       )}
     </div>
@@ -206,7 +288,7 @@ function SignedIn({ user }: { user: User }) {
   if (view.kind === "learn") return (
     <Shell right={right}>
       <button onClick={() => setView({ kind: "home" })} className="mb-4 text-sm text-muted-foreground hover:text-foreground">← Back to dashboard</button>
-      <LearnSession key={view.key} initialTopic={view.topic} prefs={prefs} onRecord={record} onExit={() => setView({ kind: "home" })} />
+      <LearnSession key={view.key} storageKey={`unstuck.user-session.v1:${user.id}`} initialTopic={view.topic} prefs={prefs} onRecord={record} onExit={() => setView({ kind: "home" })} />
     </Shell>
   );
   return (
@@ -298,6 +380,7 @@ function Dashboard({ profile, concepts, courses, ask, prefs, setCourses, userId,
   const [openExplanation, setOpenExplanation] = useState<string | null>(null);
   const course = courses[0];
   const byName = new Map(concepts.map((c) => [c.concept.toLowerCase(), c]));
+  const needsDiagnostic = concepts.length === 0;
   const due = concepts.filter((c) => c.review_at && new Date(c.review_at) <= new Date());
   const work = concepts.filter((c) => statusGroup(c.status) === "work");
   const nextTopic = course?.topics.find((t) => statusGroup(byName.get(t.name.toLowerCase())?.status ?? "x") !== "done");
@@ -306,6 +389,7 @@ function Dashboard({ profile, concepts, courses, ask, prefs, setCourses, userId,
 
   const makeCourse = async () => {
     if (!courseGoal.trim() || creating) return;
+    if (needsDiagnostic) { setErr("Complete one quick diagnostic and practice question first so your plan starts from demonstrated knowledge."); return; }
     setCreating(true); setErr(null);
     try {
       const { json } = await ask({ data: { action: "course", payload: { wantsToLearn: courseGoal, ...prefs, alreadyDemonstrated: concepts.filter((c) => statusGroup(c.status) === "done").map((c) => c.concept) } } });
@@ -362,10 +446,10 @@ function Dashboard({ profile, concepts, courses, ask, prefs, setCourses, userId,
               </ol>
               <p className="mt-3 text-xs text-muted-foreground">A topic counts as demonstrated after two correct answers in a row, in different situations, without hints.</p>
             </>
-          ) : <p className="mt-2 text-sm text-muted-foreground">No course yet. Tell us what you want to learn and we'll build a short plan around you.</p>}
+          ) : <p className="mt-2 text-sm text-muted-foreground">{needsDiagnostic ? "Complete one quick diagnostic first. We use what you demonstrate to choose a useful starting point instead of guessing your level." : "No course yet. Tell us what you want to learn and we'll build a short plan around your goal and demonstrated starting point."}</p>}
           <form className="mt-5 flex gap-2" onSubmit={(e) => { e.preventDefault(); makeCourse(); }}>
             <input value={courseGoal} onChange={(e) => setCourseGoal(e.target.value)} placeholder="e.g. Fractions, Newton's laws, probability" className="min-w-0 flex-1 rounded-lg border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-ring" />
-            <button disabled={creating || !courseGoal.trim()} className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">{creating ? "Building…" : course ? "New course" : "Build my course"}</button>
+            <button disabled={creating || !courseGoal.trim() || needsDiagnostic} className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">{creating ? "Building…" : needsDiagnostic ? "Check a concept first" : course ? "New course" : "Build my course"}</button>
           </form>
           {err && <p role="alert" className="mt-2 text-sm text-destructive">{err}</p>}
         </section>

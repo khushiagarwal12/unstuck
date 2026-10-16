@@ -139,7 +139,13 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      import_guest_progress: {
+        Args: {
+          p_conversion_id: string
+          p_records: Json
+        }
+        Returns: boolean
+      }
     }
     Enums: {
       [_ in never]: never

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { RateLimiter } from "@/lib/rate-limit";
 import { type Generate, runTutor } from "@/lib/tutor-core";
 import { extractJson, normalize } from "@/lib/tutor-schemas";
+import { promptFor } from "@/lib/tutor-prompts";
 
 /** Test double: answers each call with the next queued reply and records the prompts. */
 function scripted(...replies: (string | object)[]) {
@@ -83,7 +84,9 @@ describe("output validation", () => {
 
 describe("rules the model cannot be trusted with", () => {
   const diag = {
+    demonstrated: [],
     hypotheses: [{ label: "x", summary: "You may be mixing it up.", confidence: "low" }],
+    unresolved: ["Whether a prerequisite is missing."],
     needsFollowUp: true,
     followUp: { question: "Which?", options: ["a", "b"], why: "to separate them" },
     recommendedStyle: "visual",
@@ -92,6 +95,62 @@ describe("rules the model cannot be trusted with", () => {
   it("stops asking follow-ups after two", () => {
     expect((normalize("diagnose", diag, { followUpCount: 2 }) as { needsFollowUp: boolean }).needsFollowUp).toBe(false);
     expect((normalize("diagnose", diag, { followUpCount: 1 }) as { needsFollowUp: boolean }).needsFollowUp).toBe(true);
+  });
+
+  it("keeps a single observed answer at low confidence", () => {
+    const out = normalize("diagnose", {
+      ...diag,
+      hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
+    }, { learnerAnswer: "A", diagnosticCorrect: false }) as typeof diag;
+    expect(out.hypotheses[0]?.confidence).toBe("low");
+    expect(out.needsFollowUp).toBe(true);
+  });
+
+  it("caps confidence at medium until three answers are observed", () => {
+    const out = normalize("diagnose", {
+      ...diag,
+      hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
+    }, {
+      learnerAnswer: "A",
+      diagnosticCorrect: false,
+      followUpAnswers: [{ q: "Why?", a: "B" }],
+      followUpCount: 1,
+    }) as typeof diag;
+    expect(out.hypotheses[0]?.confidence).toBe("medium");
+  });
+
+  it("allows higher confidence only after three observed answers", () => {
+    const out = normalize("diagnose", {
+      ...diag,
+      hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
+    }, {
+      learnerAnswer: "A",
+      diagnosticCorrect: false,
+      followUpAnswers: [{ q: "Why?", a: "B" }, { q: "Another check?", a: "C" }],
+      followUpCount: 2,
+    }) as typeof diag;
+    expect(out.hypotheses[0]?.confidence).toBe("high");
+    expect(out.needsFollowUp).toBe(false);
+  });
+
+  it("lowers confidence when the learner disputes a hypothesis even after more evidence", () => {
+    const out = normalize("diagnose", {
+      ...diag,
+      hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
+    }, {
+      learnerAnswer: "A",
+      followUpAnswers: [{ q: "Why?", a: "B" }, { q: "Another check?", a: "C" }],
+      followUpCount: 2,
+      disputedHypotheses: ["x"],
+    }) as typeof diag;
+    expect(out.hypotheses[0]?.confidence).toBe("low");
+  });
+
+  it("instructs the diagnosis to keep self-report distinct from evidence and surface contradictions", () => {
+    const prompt = promptFor("diagnose", { learnerPreferences: { selfReportedLevel: "confident" } });
+    expect(prompt).toContain("self-report distinct from demonstrated evidence");
+    expect(prompt).toContain("contradictory");
+    expect(prompt).toContain("disputed");
   });
 
   it("only lets a course prerequisite point at an earlier topic", () => {

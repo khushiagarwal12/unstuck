@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
 import { pickProvider } from "./ai-provider.server";
+import { checkAnswerKey, protectTutorQuestion } from "./answer-key.server";
 import { enforceLimits } from "./limits.server";
 import { runTutor } from "./tutor-core";
 import { ACTIONS } from "./tutor-schemas";
@@ -20,5 +21,22 @@ export const askTutor = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     enforceLimits();
     const json = await runTutor(pickProvider(process.env), data.action, data.payload);
-    return { json };
+    if (data.action !== "start" && data.action !== "transfer") return { json };
+    return {
+      json: await protectTutorQuestion(
+        json,
+        data.action === "start" ? "diagnostic" : "transfer",
+        process.env.QUESTION_SIGNING_SECRET,
+      ),
+    };
   });
+
+const answerInput = z.object({
+  kind: z.enum(["diagnostic", "transfer"]),
+  answerToken: z.string().min(1).max(4096),
+  choice: z.number().int().min(0).max(3),
+});
+
+export const checkTutorAnswer = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) => answerInput.parse(d))
+  .handler(async ({ data }) => checkAnswerKey(data.answerToken, data.kind, data.choice, process.env.QUESTION_SIGNING_SECRET));
