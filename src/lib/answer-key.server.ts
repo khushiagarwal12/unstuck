@@ -2,7 +2,7 @@ export type AnswerKind = "diagnostic" | "transfer";
 type TutorQuestion = Record<string, unknown> & { correctIndex: number };
 
 type AnswerKey = {
-  kind: AnswerKind;
+  kind: AnswerKind | "course-assessment";
   correctIndex: number;
   explanation?: string;
   expiresAt: number;
@@ -10,6 +10,7 @@ type AnswerKey = {
 };
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const COURSE_TOKEN_TTL_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 const submissions = new Map<string, { choice: number; result: { correct: boolean; explanation?: string }; expiresAt: number }>();
 
 function encodeBase64Url(value: Uint8Array): string {
@@ -56,6 +57,63 @@ export async function issueAnswerKey(
     plaintext,
   );
   return `${encodeBase64Url(iv)}.${encodeBase64Url(new Uint8Array(encrypted))}`;
+}
+
+export async function sealCourseAssessment(
+  payload: Record<string, unknown>,
+  secret: string | undefined,
+  now = Date.now(),
+): Promise<string> {
+  const nonce = encodeBase64Url(crypto.getRandomValues(new Uint8Array(16)));
+  const plaintext = new TextEncoder().encode(JSON.stringify({
+    kind: "course-assessment",
+    payload,
+    expiresAt: now + COURSE_TOKEN_TTL_MS,
+    nonce,
+  }));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    await encryptionKey(configuredSecret(secret)),
+    plaintext,
+  );
+  return `${encodeBase64Url(iv)}.${encodeBase64Url(new Uint8Array(encrypted))}`;
+}
+
+export async function openCourseAssessment(
+  token: string,
+  secret: string | undefined,
+  now = Date.now(),
+): Promise<Record<string, unknown>> {
+  const key = configuredSecret(secret);
+  const [suppliedIv, ciphertext, extra] = token.split(".");
+  if (!suppliedIv || !ciphertext || extra !== undefined) throw new Error("This assignment has expired. Please generate it again.");
+  let iv: Uint8Array;
+  let encrypted: Uint8Array;
+  try {
+    iv = decodeBase64Url(suppliedIv);
+    encrypted = decodeBase64Url(ciphertext);
+  } catch {
+    throw new Error("This assignment could not be verified. Please try again.");
+  }
+  if (iv.length !== 12) throw new Error("This assignment could not be verified. Please try again.");
+  try {
+    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, await encryptionKey(key), encrypted);
+    const parsed = JSON.parse(new TextDecoder().decode(plaintext)) as {
+      kind?: unknown;
+      payload?: unknown;
+      expiresAt?: unknown;
+      nonce?: unknown;
+    };
+    if (parsed.kind !== "course-assessment" || typeof parsed.expiresAt !== "number" || parsed.expiresAt < now ||
+      typeof parsed.nonce !== "string" || parsed.payload === null || typeof parsed.payload !== "object") {
+      throw new Error("This assignment has expired. Please generate it again.");
+    }
+    return parsed.payload as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("expired")) throw error;
+    throw new Error("This assignment could not be verified. Please try again.");
+  }
 }
 
 export async function protectTutorQuestion(

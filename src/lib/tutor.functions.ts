@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { pickProvider } from "./ai-provider.server";
 import { checkAnswerKey, protectTutorQuestion } from "./answer-key.server";
+import { protectCoursePlan } from "./course-assessment.server";
 import { enforceLimits } from "./limits.server";
 import { runTutor } from "./tutor-core";
 import { ACTIONS } from "./tutor-schemas";
@@ -21,6 +22,9 @@ export const askTutor = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     enforceLimits();
     const json = await runTutor(pickProvider(process.env), data.action, data.payload);
+    if (data.action === "course") {
+      return { json: await protectCoursePlan(json, process.env.QUESTION_SIGNING_SECRET) };
+    }
     if (data.action !== "start" && data.action !== "transfer") return { json };
     return {
       json: await protectTutorQuestion(

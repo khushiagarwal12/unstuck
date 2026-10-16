@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { checkAnswerKey, issueAnswerKey, protectTutorQuestion } from "@/lib/answer-key.server";
+import { checkAnswerKey, issueAnswerKey, openCourseAssessment, protectTutorQuestion, sealCourseAssessment } from "@/lib/answer-key.server";
 
 const secret = "this-is-a-test-signing-secret-long-enough";
 
@@ -49,6 +49,14 @@ describe("server-held answer keys", () => {
   it("returns a transfer explanation only after answer submission", async () => {
     const token = await issueAnswerKey({ kind: "transfer", correctIndex: 1, explanation: "A short explanation." }, secret);
     expect((await checkAnswerKey(token, "transfer", 1, secret)).explanation).toBe("A short explanation.");
+  });
+
+  it("keeps course assignment answer keys encrypted and usable after the normal question-token expiry", async () => {
+    const payload = { phaseId: "phase-one", correctIndex: 2, referenceCriteria: "Explain the invariant." };
+    const token = await sealCourseAssessment(payload, secret, 1000);
+    expect(token).not.toContain("correctIndex");
+    expect(await openCourseAssessment(token, secret, 1000 + 365 * 24 * 60 * 60 * 1000)).toEqual(payload);
+    await expect(openCourseAssessment(token, "a-different-signing-secret-that-is-long-enough", 1001)).rejects.toThrow(/verified/);
   });
 
   it("rejects tampered, wrong-kind, expired, and unconfigured keys", async () => {

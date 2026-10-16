@@ -5,9 +5,11 @@ import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
 import { askTutor } from "@/lib/tutor.functions";
-import { courseSchema, type CoursePlan } from "@/lib/tutor-schemas";
+import { publicCourseSchema, type CoursePlan } from "@/lib/tutor-schemas";
 import { getCapabilities, readProblem } from "@/lib/google.functions";
 import { shrinkImage } from "@/lib/image";
+import { assignmentResultSchema, type AssignmentResult } from "@/lib/course-assessment";
+import { evaluateCourseAssignment } from "@/lib/course-assessment.functions";
 import { importGuestProgress } from "@/lib/progress.functions";
 import { appendGuestProgress, clearGuestProgress, GUEST_PROGRESS_KEY, readGuestProgress, type GuestProgressBundle } from "@/lib/guest-progress";
 import { adoptGuestSession } from "@/lib/session-storage";
@@ -43,6 +45,16 @@ type CourseProgress = {
   updated_at: string;
 };
 type CourseProgressPatch = Partial<Omit<CourseProgress, "user_id" | "course_id" | "updated_at">>;
+type CourseAssessmentAttempt = {
+  attempt_id: string;
+  course_id: string;
+  phase_id: string;
+  responses: unknown;
+  evaluation: AssignmentResult;
+  hints_used: number;
+  retry_count: number;
+  created_at: string;
+};
 
 type View = { kind: "home" } | { kind: "learn"; topic?: string; key: number } | { kind: "settings" };
 
@@ -200,10 +212,12 @@ function Welcome({ onTry, authNotice }: { onTry: () => void; authNotice?: string
 function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => void }) {
   const ask = useServerFn(askTutor);
   const importProgress = useServerFn(importGuestProgress);
+  const gradeAssignment = useServerFn(evaluateCourseAssignment);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [concepts, setConcepts] = useState<Concept[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
   const [courseProgress, setCourseProgress] = useState<Record<string, CourseProgress>>({});
+  const [assessmentAttempts, setAssessmentAttempts] = useState<CourseAssessmentAttempt[]>([]);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
@@ -223,13 +237,14 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
       setLoadErr(error instanceof Error ? error.message : "We couldn't safely import your guest progress. It is still saved on this device.");
       return;
     }
-    const [p, c, k, cp] = await Promise.all([
+    const [p, c, k, cp, ca] = await Promise.all([
       supabase.from("profiles").select("*").eq("id", user.id).maybeSingle(),
       supabase.from("concepts").select("*").order("updated_at", { ascending: false }),
       supabase.from("courses").select("*").order("created_at", { ascending: false }),
       supabase.from("course_progress").select("*"),
+      supabase.from("course_assessment_attempts").select("*").order("created_at", { ascending: false }),
     ]);
-    if (p.error || c.error || k.error || cp.error) { setLoadErr("We couldn't load your learning profile."); return; }
+    if (p.error || c.error || k.error || cp.error || ca.error) { setLoadErr("We couldn't load your learning profile."); return; }
     let prof = p.data as Profile | null;
     if (!prof) {
       const ins = await supabase.from("profiles").insert({ id: user.id, display_name: (user.user_metadata?.full_name as string) ?? null, avatar_url: (user.user_metadata?.avatar_url as string) ?? null }).select().single();
@@ -241,7 +256,7 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
     for (const row of k.data ?? []) {
       let plan: CoursePlan | null = null;
       if (row.plan) {
-        const parsed = courseSchema.safeParse(row.plan);
+        const parsed = publicCourseSchema.safeParse(row.plan);
         if (parsed.success) plan = parsed.data;
       }
       parsedCourses.push({ ...row, plan, topics: (row.topics ?? []) as unknown as Topic[] } as Course);
@@ -251,6 +266,10 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
       ...row,
       assessment_responses: (row.assessment_responses ?? {}) as Record<string, string>,
     } as CourseProgress])));
+    setAssessmentAttempts((ca.data ?? []).flatMap((row) => {
+      const evaluation = assignmentResultSchema.safeParse(row.evaluation);
+      return evaluation.success ? [{ ...row, evaluation: evaluation.data } as CourseAssessmentAttempt] : [];
+    }));
   }, [user, importProgress, onGuestImport]);
   useEffect(() => { load(); }, [load]);
 
@@ -278,6 +297,13 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
     if (data) setConcepts((cs) => [data as Concept, ...cs.filter((c) => c.id !== (data as Concept).id)]);
   };
 
+  const rememberAssessmentAttempt = (attempt: CourseAssessmentAttempt) => {
+    setAssessmentAttempts((current) => {
+      const existing = current.find((item) => item.attempt_id === attempt.attempt_id);
+      return existing ? current.map((item) => item.attempt_id === attempt.attempt_id ? attempt : item) : [attempt, ...current];
+    });
+  };
+
   const saveCourseProgress = async (courseId: string, patch: CourseProgressPatch) => {
     const previous = courseProgress[courseId];
     const next = {
@@ -291,6 +317,7 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
       ...patch,
       updated_at: new Date().toISOString(),
     };
+
     const { data, error } = await supabase.from("course_progress").upsert(next, { onConflict: "user_id,course_id" }).select().single();
     if (error || !data) throw new Error("Couldn't save your course progress. Your existing progress is unchanged.");
     const saved = { ...data, assessment_responses: data.assessment_responses as Record<string, string> } as CourseProgress;
@@ -343,7 +370,7 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
   );
   return (
     <Shell right={right}>
-      <Dashboard profile={profile} concepts={concepts} courses={courses} courseProgress={courseProgress} saveCourseProgress={saveCourseProgress} ask={ask} prefs={prefs} setCourses={setCourses} userId={user.id}
+      <Dashboard profile={profile} concepts={concepts} courses={courses} courseProgress={courseProgress} saveCourseProgress={saveCourseProgress} assessmentAttempts={assessmentAttempts} gradeAssignment={gradeAssignment} rememberAssessmentAttempt={rememberAssessmentAttempt} ask={ask} prefs={prefs} setCourses={setCourses} userId={user.id}
         learn={(topic) => setView({ kind: "learn", topic, key: Date.now() })}
         dismiss={async (c) => { const at = new Date(Date.now() + 7 * 86400000).toISOString(); await supabase.from("concepts").update({ review_at: at }).eq("id", c.id); setConcepts((cs) => cs.map((x) => x.id === c.id ? { ...x, review_at: at } : x)); }}
       />
@@ -420,9 +447,12 @@ function Onboarding({ profile, editing, onDone }: { profile: Profile; editing: b
 
 const statusGroup = (s: string) => s.startsWith("Demonstrated") ? "done" : s === "Progressing" ? "developing" : "work";
 
-function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgress, ask, prefs, setCourses, userId, learn, dismiss }: {
+function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgress, assessmentAttempts, gradeAssignment, rememberAssessmentAttempt, ask, prefs, setCourses, userId, learn, dismiss }: {
   profile: Profile; concepts: Concept[]; courses: Course[]; courseProgress: Record<string, CourseProgress>;
   saveCourseProgress: (courseId: string, patch: CourseProgressPatch) => Promise<CourseProgress>;
+  assessmentAttempts: CourseAssessmentAttempt[];
+  gradeAssignment: ReturnType<typeof useServerFn<typeof evaluateCourseAssignment>>;
+  rememberAssessmentAttempt: (attempt: CourseAssessmentAttempt) => void;
   ask: ReturnType<typeof useServerFn<typeof askTutor>>; prefs: Record<string, unknown> | undefined;
   setCourses: React.Dispatch<React.SetStateAction<Course[]>>; userId: string; learn: (t?: string) => void; dismiss: (c: Concept) => void;
 }) {
@@ -436,7 +466,12 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
   const [draft, setDraft] = useState<CoursePlan | null>(null);
   const [activeCourseId, setActiveCourseId] = useState(courses[0]?.id ?? "");
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
-  const [assessmentDraft, setAssessmentDraft] = useState<Record<string, string>>({});
+  const [objectiveAnswers, setObjectiveAnswers] = useState<Record<string, number>>({});
+  const [writtenAnswers, setWrittenAnswers] = useState<Record<string, string>>({});
+  const [followUpAnswers, setFollowUpAnswers] = useState<Record<string, string>>({});
+  const [usedHints, setUsedHints] = useState<Record<string, string[]>>({});
+  const [pendingAttemptIds, setPendingAttemptIds] = useState<Record<string, string>>({});
+  const [submittingPhaseId, setSubmittingPhaseId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [openExplanation, setOpenExplanation] = useState<string | null>(null);
   const course = courses.find((c) => c.id === activeCourseId) ?? courses[0];
@@ -448,7 +483,12 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
   const work = concepts.filter((c) => statusGroup(c.status) === "work");
   const topicEntries = plan?.phases.flatMap((phase) => phase.topics.map((topic) => ({ phase, topic }))) ?? [];
   const completedTopicIds = new Set(progress?.completed_topic_ids ?? []);
-  const completedPhaseIds = new Set(progress?.completed_phase_ids ?? []);
+  const courseAttempts = assessmentAttempts.filter((attempt) => attempt.course_id === course?.id);
+  const usesGradedAssignments = !!plan?.phases.every((phase) => !!phase.assessment.answerToken);
+  const completedPhaseIds = new Set([
+    ...(!usesGradedAssignments ? progress?.completed_phase_ids ?? [] : []),
+    ...courseAttempts.filter((attempt) => attempt.evaluation.passed && !attempt.evaluation.needsFollowUp).map((attempt) => attempt.phase_id),
+  ]);
   const openPhase = plan?.phases.find((phase) => !completedPhaseIds.has(phase.id));
   const firstOpenTopic = openPhase?.topics.find((topic) => !completedTopicIds.has(topic.id));
   const firstOpenEntry = topicEntries.find(({ phase, topic }) => phase.id === openPhase?.id && topic.id === firstOpenTopic?.id);
@@ -482,7 +522,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
         alreadyDemonstrated: concepts.filter((c) => statusGroup(c.status) === "done").slice(0, 24).map((c) => c.concept.slice(0, 120)),
         learningMaterial: courseMaterial.trim().slice(0, 6000) || null,
       } } });
-      const parsed = courseSchema.safeParse(JSON.parse(json));
+      const parsed = publicCourseSchema.safeParse(JSON.parse(json));
       if (!parsed.success) throw new Error("The generated course plan did not match the required structure. Please try again.");
       setDraft(parsed.data);
     } catch (e) { setErr(e instanceof Error ? e.message : "Couldn't build a course."); }
@@ -528,7 +568,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
     const covered = entries.filter(({ topic }) => hasDemonstratedCover(topic)).map(({ topic }) => topic.id);
     const previous = courseProgress[selected.id];
     const completed = Array.from(new Set([...(previous?.completed_topic_ids ?? []), ...covered]));
-    const completedPhases = new Set(previous?.completed_phase_ids ?? []);
+    const completedPhases = completedPhaseIds;
     const openPhase = selected.plan.phases.find((phase) => !completedPhases.has(phase.id));
     const savedPosition = entries.find(({ phase, topic }) => phase.id === openPhase?.id && topic.id === previous?.current_topic_id && !completed.includes(topic.id));
     const next = savedPosition ?? openPhase?.topics.find((topic) => !completed.includes(topic.id));
@@ -570,24 +610,78 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
   };
 
   const submitAssessment = async (phase: CoursePlan["phases"][number]) => {
-    if (!course) return;
-    const responses = { ...(progress?.assessment_responses ?? {}) };
-    phase.assessment.tasks.forEach((_, index) => {
-      responses[`${phase.id}:${index}`] = assessmentDraft[`${phase.id}:${index}`] ?? responses[`${phase.id}:${index}`] ?? "";
-    });
-    const completedPhases = Array.from(new Set([...(progress?.completed_phase_ids ?? []), phase.id]));
-    const nextPhase = plan?.phases.find((item) => !completedPhases.includes(item.id));
-    const next = nextPhase?.topics.find((topic) => !completedTopicIds.has(topic.id));
+    if (!course || !phase.assessment.answerToken || submittingPhaseId) return;
+    const priorResults = courseAttempts.filter((attempt) => attempt.phase_id === phase.id);
+    const latest = priorResults[0];
+    const objectiveQs = phase.assessment.objectiveQuestions ?? [];
+    const openQs = phase.assessment.openQuestions ?? [];
+    const objectives = Object.fromEntries(objectiveQs.map((question) => [
+      question.id,
+      objectiveAnswers[`${phase.id}:${question.id}`],
+    ]));
+    const written = Object.fromEntries(openQs.map((question) => {
+      const base = writtenAnswers[`${phase.id}:${question.id}`] ?? "";
+      const followUp = followUpAnswers[`${phase.id}:${question.id}`]?.trim();
+      const followUpQuestion = latest?.evaluation.followUpQuestionId === question.id ? latest.evaluation.followUpQuestion : null;
+      return [question.id, followUpQuestion && followUp
+        ? `${base}\n\nFollow-up question: ${followUpQuestion}\nLearner follow-up: ${followUp}`
+        : base];
+    }));
+    const storageKey = `unstuck.course-assessment-pending.v1:${userId}:${course.id}:${phase.id}`;
+    let attemptId = pendingAttemptIds[phase.id];
+    if (!attemptId) {
+      try {
+        const stored = window.localStorage.getItem(storageKey);
+        const pending = stored ? JSON.parse(stored) as { attemptId?: unknown; completed?: unknown } : null;
+        attemptId = pending?.completed === false && typeof pending.attemptId === "string" ? pending.attemptId : crypto.randomUUID();
+        window.localStorage.setItem(storageKey, JSON.stringify({ attemptId, completed: false }));
+      } catch {
+        setErr("This browser couldn't save a retry-safe submission id. Enable local storage and try again.");
+        return;
+      }
+    }
+    setPendingAttemptIds((current) => ({ ...current, [phase.id]: attemptId }));
+    setSubmittingPhaseId(phase.id); setErr(null);
     try {
-      await saveCourseProgress(course.id, {
-        assessment_responses: responses,
-        completed_phase_ids: completedPhases,
-        current_phase_id: nextPhase?.id ?? null,
-        current_topic_id: next?.id ?? null,
+      const attempt = await gradeAssignment({ data: {
+        attemptId,
+        courseId: course.id,
+        phaseId: phase.id,
+        answerToken: phase.assessment.answerToken,
+        objectiveAnswers: objectives,
+        writtenAnswers: written,
+        hintsUsed: (usedHints[phase.id] ?? []).length,
+      } });
+      const parsed = assignmentResultSchema.safeParse(attempt.evaluation);
+      if (!parsed.success) throw new Error("The saved assessment result could not be validated. Please reload your course.");
+      const saved = { ...attempt, evaluation: parsed.data } as CourseAssessmentAttempt;
+      rememberAssessmentAttempt(saved);
+      try { window.localStorage.setItem(storageKey, JSON.stringify({ attemptId, completed: true })); } catch {
+        setErr("Your score is saved, but this browser couldn't record the finished submission marker.");
+      }
+      setPendingAttemptIds((current) => {
+        const next = { ...current };
+        delete next[phase.id];
+        return next;
       });
-      setActiveTopicId(next?.id ?? null);
-      setErr(null);
-    } catch (e) { setErr(e instanceof Error ? e.message : "Couldn't save your assessment."); }
+      setFollowUpAnswers((current) => {
+        const next = { ...current };
+        for (const question of openQs) delete next[`${phase.id}:${question.id}`];
+        return next;
+      });
+      setUsedHints((current) => ({ ...current, [phase.id]: [] }));
+      if (parsed.data.passed && !parsed.data.needsFollowUp) {
+        const nextPhase = plan?.phases.find((item, index) => index > plan.phases.findIndex((candidate) => candidate.id === phase.id) && !completedPhaseIds.has(item.id));
+        const firstTopic = nextPhase?.topics[0];
+        await saveCourseProgress(course.id, {
+          current_phase_id: nextPhase?.id ?? null,
+          current_topic_id: firstTopic?.id ?? null,
+        });
+        setActiveTopicId(firstTopic?.id ?? null);
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't submit this assignment. Retry safely; duplicate submissions keep the original result.");
+    } finally { setSubmittingPhaseId(null); }
   };
 
   const readMaterialPhoto = async (file: File) => {
@@ -630,16 +724,27 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
           {course && plan ? (
             <div className="rounded-xl border p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <div><h3 className="text-lg font-semibold">{course.title}</h3><p className="text-sm text-muted-foreground">{course.goal}</p></div>
+                <div><h3 className="text-lg font-semibold">{course.title}</h3><p className="text-sm text-muted-foreground">{course.goal}</p><p className="mt-1 text-xs text-muted-foreground">{plan.phases.every((phase) => completedPhaseIds.has(phase.id)) ? "Course complete by phase-assignment criteria; this is separate from independently demonstrated mastery." : "Phase assignments measure course progress; independent mastery is tracked separately through learning attempts."}</p></div>
                 <button onClick={() => void startCourse(course)} className="rounded-md bg-secondary px-3 py-1.5 text-sm">Resume course</button>
               </div>
               <ul className="mt-3 flex flex-wrap gap-2">{plan.outcomes.map((outcome) => <li key={outcome} className="rounded-full bg-secondary px-3 py-1 text-xs">{outcome}</li>)}</ul>
               <div className="mt-5 space-y-5">
                 {plan.phases.map((phase, phaseIndex) => {
                   const phaseUnlocked = plan.phases.slice(0, phaseIndex).every((previousPhase) => completedPhaseIds.has(previousPhase.id));
+                  const phaseAttempts = courseAttempts.filter((attempt) => attempt.phase_id === phase.id);
+                  const latestAttempt = phaseAttempts[0];
+                  const objectiveQuestions = phase.assessment.objectiveQuestions ?? [];
+                  const openQuestions = phase.assessment.openQuestions ?? [];
+                  const followUpId = latestAttempt?.evaluation.followUpQuestionId;
+                  const assignmentReady = phaseUnlocked &&
+                    phase.topics.every((topic) => completedTopicIds.has(topic.id)) &&
+                    objectiveQuestions.every((question) => objectiveAnswers[`${phase.id}:${question.id}`] !== undefined) &&
+                    openQuestions.every((question) => (writtenAnswers[`${phase.id}:${question.id}`] ?? "").trim().length > 0) &&
+                    (!followUpId || (followUpAnswers[`${phase.id}:${followUpId}`] ?? "").trim().length > 0) &&
+                    submittingPhaseId !== phase.id;
                   return (
                   <section key={phase.id} className="border-l-2 pl-4">
-                    <div className="flex items-start justify-between gap-2"><div><h4 className="font-semibold">Phase {phaseIndex + 1}: {phase.title}</h4><p className="text-sm text-muted-foreground">{phase.purpose}</p></div><span className="text-xs text-muted-foreground">{progress?.completed_phase_ids.includes(phase.id) ? "Assessment complete" : "In progress"}</span></div>
+                    <div className="flex items-start justify-between gap-2"><div><h4 className="font-semibold">Phase {phaseIndex + 1}: {phase.title}</h4><p className="text-sm text-muted-foreground">{phase.purpose}</p></div><span className="text-xs text-muted-foreground">{completedPhaseIds.has(phase.id) ? "Assessment complete" : "In progress"}</span></div>
                     <ol className="mt-3 space-y-2">
                       {phase.topics.map((topic, index) => {
                         const done = completedTopicIds.has(topic.id);
@@ -666,12 +771,59 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
                       })}
                     </ol>
                     <details className="mt-3 rounded-lg bg-secondary/50 p-3">
-                      <summary className="cursor-pointer font-medium">{phase.assessment.title} — end-of-phase assessment</summary>
+                      <summary className="cursor-pointer font-medium">{phase.assessment.title} — phase assignment</summary>
                       <p className="mt-2 text-sm text-muted-foreground">{phase.assessment.purpose}</p>
-                      {phase.assessment.tasks.map((task, index) => <label key={task} className="mt-3 block text-sm">{index + 1}. {task}<textarea className="mt-1 w-full rounded-md border bg-background p-2" rows={2} value={assessmentDraft[`${phase.id}:${index}`] ?? progress?.assessment_responses[`${phase.id}:${index}`] ?? ""} onChange={(event) => setAssessmentDraft((current) => ({ ...current, [`${phase.id}:${index}`]: event.target.value }))} /></label>)}
-                      <p className="mt-3 text-sm"><strong>Rubric:</strong> {phase.assessment.rubric.join(" · ")}</p><p className="mt-1 text-sm"><strong>Pass criteria:</strong> {phase.assessment.passCriteria}</p>
-                      <p className="mt-2 text-xs text-muted-foreground">Complete the phase topics first, answer each assessment task, and check your work against the rubric before continuing.</p>
-                      <button disabled={!phaseUnlocked || !phase.topics.every((topic) => completedTopicIds.has(topic.id)) || !phase.assessment.tasks.every((_, index) => (assessmentDraft[`${phase.id}:${index}`] ?? progress?.assessment_responses[`${phase.id}:${index}`] ?? "").trim())} onClick={() => void submitAssessment(phase)} className="mt-3 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">Save assessment and continue</button>
+                      {phase.assessment.answerToken ? (
+                        <>
+                          {objectiveQuestions.map((question) => {
+                            const hintKey = `${phase.id}:${question.id}`;
+                            const hintShown = (usedHints[phase.id] ?? []).includes(question.id);
+                            return <fieldset key={question.id} className="mt-4 rounded-md border bg-background p-3">
+                              <legend className="px-1 text-sm font-medium">{question.question} <span className="text-xs text-muted-foreground">({question.points} pts · {question.objective})</span></legend>
+                              <div className="mt-2 space-y-2">{question.options.map((option, index) => <label key={option} className="flex gap-2 text-sm"><input type="radio" name={hintKey} checked={objectiveAnswers[hintKey] === index} onChange={() => setObjectiveAnswers((current) => ({ ...current, [hintKey]: index }))} />{option}</label>)}</div>
+                              <button type="button" onClick={() => setUsedHints((current) => ({ ...current, [phase.id]: Array.from(new Set([...(current[phase.id] ?? []), question.id])) }))} className="mt-2 text-xs text-accent underline">Show hint</button>
+                              {hintShown && <p className="mt-1 text-xs text-muted-foreground">{question.hint}</p>}
+                            </fieldset>;
+                          })}
+                          {openQuestions.map((question) => {
+                            const responseKey = `${phase.id}:${question.id}`;
+                            const followUpPending = latestAttempt?.evaluation.followUpQuestionId === question.id;
+                            const hintShown = (usedHints[phase.id] ?? []).includes(question.id);
+                            return <div key={question.id} className="mt-4 rounded-md border bg-background p-3">
+                              <label className="block text-sm font-medium">{question.prompt} <span className="text-xs text-muted-foreground">({question.objective})</span><textarea maxLength={500} className="mt-2 w-full rounded-md border bg-background p-2" rows={3} value={writtenAnswers[responseKey] ?? ""} onChange={(event) => setWrittenAnswers((current) => ({ ...current, [responseKey]: event.target.value }))} /></label>
+                              <button type="button" onClick={() => setUsedHints((current) => ({ ...current, [phase.id]: Array.from(new Set([...(current[phase.id] ?? []), question.id])) }))} className="mt-2 text-xs text-accent underline">Show hint</button>
+                              {hintShown && <p className="mt-1 text-xs text-muted-foreground">{question.hint}</p>}
+                              {followUpPending && latestAttempt?.evaluation.followUpQuestion && <label className="mt-3 block text-sm font-medium">{latestAttempt.evaluation.followUpQuestion}<textarea maxLength={200} className="mt-1 w-full rounded-md border bg-background p-2" rows={2} value={followUpAnswers[responseKey] ?? ""} onChange={(event) => setFollowUpAnswers((current) => ({ ...current, [responseKey]: event.target.value }))} /></label>}
+                            </div>;
+                          })}
+                          <p className="mt-3 text-sm"><strong>Phase criteria:</strong> {phase.assessment.passCriteria}</p>
+                          <p className="mt-3 text-xs text-muted-foreground">Complete all phase lessons first. Assessment score, phase completion, and independently demonstrated mastery are recorded separately. Hints and retries count; repeating this assignment does not establish transfer or mastery.</p>
+                          <button disabled={!assignmentReady} onClick={() => void submitAssessment(phase)} className="mt-3 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">{submittingPhaseId === phase.id ? "Grading and saving…" : "Submit assignment"}</button>
+                          {phaseAttempts.map((attempt, attemptIndex) => {
+                            const missedObjective = [
+                              ...attempt.evaluation.objectiveResults.filter((result) => !result.correct).map((result) => result.objective),
+                              ...attempt.evaluation.writtenResults.filter((result) => result.pointsEarned < result.pointsPossible).map((result) => result.objective),
+                            ][0];
+                            const missedTopic = phase.topics.find((topic) => topic.objectives.some((objective) => objective.toLowerCase() === missedObjective?.toLowerCase()));
+                            const prerequisiteId = missedTopic?.prerequisites[0];
+                            const prerequisiteTopic = topicEntries.find((entry) => entry.topic.id === prerequisiteId);
+                            const reviewTopic = attempt.evaluation.recommendedAction === "prerequisite-review" ? prerequisiteTopic?.topic.name ?? missedObjective : missedObjective;
+                            return <section key={attempt.attempt_id} className="mt-4 rounded-md border bg-background p-3 text-sm">
+                            <h5 className="font-semibold">Attempt {phaseAttempts.length - attemptIndex}: {attempt.evaluation.score}/{attempt.evaluation.maxScore} ({attempt.evaluation.percentage}%)</h5>
+                            <p className="text-xs text-muted-foreground">Hints: {attempt.hints_used} · retries before this attempt: {attempt.retry_count} · {attempt.evaluation.independent ? "independent attempt" : "supported or retaken attempt"} · assessment score is not mastery</p>
+                            <ul className="mt-2 space-y-2">{attempt.evaluation.objectiveResults.map((result) => <li key={result.questionId}><strong>{result.correct ? "Correct" : "Not yet"}:</strong> {result.objective} — {result.explanation}</li>)}{attempt.evaluation.writtenResults.map((result) => <li key={result.questionId}><strong>Written response:</strong> {result.objective} — {result.pointsEarned}/{result.pointsPossible}. {result.feedback}<ul className="ml-4 list-disc">{result.criteria.map((criterion) => <li key={criterion.criterion}>{criterion.criterion}: {criterion.score}/{criterion.pointsPossible} — evidence: {criterion.evidence}</li>)}</ul></li>)}</ul>
+                            <p className="mt-2 font-medium">Next step: {attempt.evaluation.recommendedAction.replace(/-/g, " ")}</p><ul className="ml-4 list-disc text-muted-foreground">{attempt.evaluation.nextSteps.map((step) => <li key={step}>{step}</li>)}</ul>
+                            {attempt.evaluation.needsFollowUp && <p className="mt-2 text-accent">Your result is not marked as passed until the reasoning follow-up is reviewed.</p>}
+                            {reviewTopic && !attempt.evaluation.passed && <button onClick={() => learn(`${reviewTopic} (review with a different explanation)`)} className="mt-3 rounded-md bg-secondary px-3 py-2 text-sm">Review this objective with another explanation</button>}
+                          </section>;
+                          })}
+                        </>
+                      ) : (
+                        <div className="mt-3 rounded-md border bg-background p-3 text-sm">
+                          <p>This saved plan predates structured assignment answer keys. Its learning work and saved progress are preserved; create a new plan to use graded phase assignments.</p>
+                          {phase.assessment.tasks?.map((task) => <p key={task} className="mt-2">{task}</p>)}
+                        </div>
+                      )}
                     </details>
                   </section>
                   );

@@ -128,6 +128,42 @@ export type Database = {
         }
         Relationships: []
       }
+      course_assessment_attempts: {
+        Row: {
+          attempt_id: string
+          course_id: string
+          created_at: string
+          evaluation: Json
+          hints_used: number
+          phase_id: string
+          responses: Json
+          retry_count: number
+          user_id: string
+        }
+        Insert: {
+          attempt_id: string
+          course_id: string
+          created_at?: string
+          evaluation: Json
+          hints_used: number
+          phase_id: string
+          responses: Json
+          retry_count: number
+          user_id: string
+        }
+        Update: {
+          attempt_id?: string
+          course_id?: string
+          created_at?: string
+          evaluation?: Json
+          hints_used?: number
+          phase_id?: string
+          responses?: Json
+          retry_count?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           avatar_url: string | null

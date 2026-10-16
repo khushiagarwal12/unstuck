@@ -49,6 +49,32 @@ export const interveneSchema = z.object({
   steps: z.array(text(400)).max(8),
 });
 
+const courseTopicsSchema = z.array(z.object({
+  id: text(40).regex(/^[a-z0-9-]+$/),
+  name: text(80),
+  why: text(300),
+  covers: z.array(text(80)).min(1).max(4),
+  prerequisites: z.array(text(40)).max(4),
+  objectives: z.array(text(200)).min(1).max(5),
+  subtopics: z.array(z.object({
+    name: text(80),
+    objective: text(200),
+  })).min(1).max(5),
+  lesson: z.object({
+    explanation: text(1800),
+    examples: z.array(z.object({
+      prompt: text(300),
+      walkthrough: text(800),
+    })).min(1).max(3),
+    guidedPractice: z.array(z.object({
+      prompt: text(300),
+      hint: text(300),
+      successCriteria: text(300),
+    })).min(1).max(3),
+  }),
+  minutes: z.number().int().min(1).max(120),
+})).min(1).max(4);
+
 export const courseSchema = z.object({
   title: text(120),
   goal: z.string().trim().max(300),
@@ -57,36 +83,31 @@ export const courseSchema = z.object({
     id: text(40).regex(/^[a-z0-9-]+$/),
     title: text(100),
     purpose: text(300),
-    topics: z.array(z.object({
-      id: text(40).regex(/^[a-z0-9-]+$/),
-      name: text(80),
-      why: text(300),
-      covers: z.array(text(80)).min(1).max(4),
-      prerequisites: z.array(text(40)).max(4),
-      objectives: z.array(text(200)).min(1).max(5),
-      subtopics: z.array(z.object({
-        name: text(80),
-        objective: text(200),
-      })).min(1).max(5),
-      lesson: z.object({
-        explanation: text(1800),
-        examples: z.array(z.object({
-          prompt: text(300),
-          walkthrough: text(800),
-        })).min(1).max(3),
-        guidedPractice: z.array(z.object({
-          prompt: text(300),
-          hint: text(300),
-          successCriteria: text(300),
-        })).min(1).max(3),
-      }),
-      minutes: z.number().int().min(1).max(120),
-    })).min(1).max(4),
+    topics: courseTopicsSchema,
     assessment: z.object({
       title: text(100),
       purpose: text(300),
-      tasks: z.array(text(500)).min(1).max(4),
-      rubric: z.array(text(300)).min(2).max(5),
+      objectiveQuestions: z.array(z.object({
+        id: text(40).regex(/^[a-z0-9-]+$/),
+        objective: text(200),
+        question: text(500),
+        options: z.array(text(240)).length(4).refine(distinct, { message: "assignment options must be different" }),
+        correctIndex: z.number().int().min(0).max(3),
+        explanation: text(500),
+        hint: text(300),
+        points: z.number().int().min(1).max(10),
+      })).min(1).max(3),
+      openQuestions: z.array(z.object({
+        id: text(40).regex(/^[a-z0-9-]+$/),
+        objective: text(200),
+        prompt: text(500),
+        referenceCriteria: text(700),
+        rubric: z.array(z.object({
+          criterion: text(200),
+          points: z.number().int().min(1).max(5),
+        })).min(1).max(4).refine((items) => distinct(items.map((item) => item.criterion)), { message: "rubric criteria must be distinct" }),
+        hint: text(300),
+      })).min(1).max(2),
       passCriteria: text(300),
     }),
   })).min(2).max(5),
@@ -96,6 +117,49 @@ export const coachSchema = z.object({
   greeting: text(200),
   focus: text(300),
   tip: text(300),
+});
+
+const publicPhaseSchema = z.object({
+  id: text(40).regex(/^[a-z0-9-]+$/),
+  title: text(100),
+  purpose: text(300),
+  topics: courseTopicsSchema,
+  assessment: z.object({
+    title: text(100),
+    purpose: text(300),
+    objectiveQuestions: z.array(z.object({
+      id: text(40),
+      objective: text(200),
+      question: text(500),
+      options: z.array(text(240)).length(4),
+      hint: text(300),
+      points: z.number().int().min(1).max(10),
+    })).max(3).optional(),
+    openQuestions: z.array(z.object({
+      id: text(40),
+      objective: text(200),
+      prompt: text(500),
+      hint: text(300),
+    })).max(2).optional(),
+    passCriteria: text(300),
+    answerToken: text(16000).optional(),
+    tasks: z.array(text(500)).max(4).optional(),
+    rubric: z.array(text(300)).max(5).optional(),
+  }),
+});
+
+export const publicCourseSchema = z.object({
+  title: text(120),
+  goal: z.string().trim().max(300),
+  outcomes: z.array(text(200)).min(1).max(6),
+  phases: z.array(publicPhaseSchema).min(2).max(5),
+  topics: z.array(z.object({
+    id: text(40),
+    name: text(80),
+    why: text(300),
+    prerequisites: z.array(text(40)),
+    minutes: z.number().int().min(1).max(120),
+  })).optional(),
 });
 
 export const solveSchema = z.object({ choice: z.number().int().min(0).max(3) });
@@ -108,7 +172,8 @@ export const schemas = {
   course: courseSchema,
   coach: coachSchema,
 } as const;
-export type CoursePlan = z.infer<typeof courseSchema>;
+export type CoursePlan = z.infer<typeof publicCourseSchema>;
+export type GeneratedCoursePlan = z.infer<typeof courseSchema>;
 
 export const MAX_FOLLOW_UPS = 2;
 
@@ -135,10 +200,15 @@ export function normalize(action: Action, value: unknown, payload: Record<string
     const c = value as z.infer<typeof courseSchema>;
     const seen = new Set<string>();
     const phaseIds = new Set<string>();
+    const assignmentIds = new Set<string>();
     let topicCount = 0;
     const phases = c.phases.map((phase) => {
       if (phaseIds.has(phase.id)) throw new Error("Course phases must have distinct ids.");
       phaseIds.add(phase.id);
+      for (const question of [...phase.assessment.objectiveQuestions, ...phase.assessment.openQuestions]) {
+        if (assignmentIds.has(question.id)) throw new Error("Assessment question ids must be distinct.");
+        assignmentIds.add(question.id);
+      }
       const topics = phase.topics.map((topic) => {
         if (seen.has(topic.id)) throw new Error("Course topics must have distinct ids.");
         topicCount++;

@@ -5,6 +5,82 @@ Scope: authentication/user continuity and diagnostic-learning changes. No deploy
 or provider migration was performed. The historical audit below describes the earlier baseline and is not a report
 of this worktree's validation.
 
+## Current phase: end-of-phase assessment and adaptive progression
+
+The assessment lifecycle is implemented in the current worktree but has not been deployed, committed, or pushed.
+It reuses the existing course plan, Supabase Postgres/RLS, authenticated server functions, and current AI provider.
+The assessment migration is pending application.
+
+### Behavior implemented
+
+- Every newly generated phase includes objective and open-ended assignment questions tied to its objectives, point
+  values, hints, explanations, explicit reference criteria, and a rubric. Objective keys are independently solved
+  before a plan is returned; generation retries once and fails rather than serving an unverified key.
+- Public course plans omit objective answer indices/explanations and open-response criteria/rubrics. These are
+  encrypted into a phase token using the existing `QUESTION_SIGNING_SECRET` mechanism and evaluated server-side.
+- Objective questions are graded deterministically. Open answers use the existing provider against explicit
+  criteria; the returned rubric names, point caps, response evidence quotes, totals, and progression state are
+  validated with Zod. The grader has no confidence field and cannot award rubric credit without a quote present in
+  the learner's answer.
+- Results include objective correctness and explanations, rubric scores/evidence/feedback, total score,
+  recommended action, and next steps. An ambiguous explanation can trigger a targeted follow-up and blocks phase
+  completion until the learner responds. At 80% the learner can advance; 50–79% recommends targeted remediation;
+  below 50% recommends prerequisite review. Hints or retakes prevent a passing result from being described as
+  independent. Assessment scores never update concept mastery.
+- The UI requires lessons and required assignment answers, exposes hints/follow-up prompts, shows attempt history,
+  and offers remediation guidance. New-plan phase completion is derived from saved passing attempts, not editable
+  client progress fields. The grading handler also checks saved topic completion and passing results for all prior
+  phases before accepting a submission. Existing completed topics and course plans are preserved.
+- Attempts are append-only for authenticated clients, scoped by RLS on reads, and written only by the authenticated
+  server handler after validating the bearer identity, owned course, course phase, answer token, response shape,
+  and evaluation. The server uses the existing service-role client and supplies the owner from verified auth
+  context. A stable browser submission UUID plus a unique `(user_id, attempt_id)` key makes retries idempotent.
+
+### Files changed in this phase
+
+- `src/lib/course-assessment.ts` (new): assignment/grade schemas, rubric-evidence validation, deterministic scoring,
+  independent-vs-supported distinction, and adaptive decisions.
+- `src/lib/course-assessment.functions.ts` (new): authenticated assessment grading and idempotent server-side
+  persistence.
+- `src/lib/course-assessment.server.ts` (new): answer-key/reference-criteria protection in course plans.
+- `src/lib/answer-key.server.ts`: long-lived encrypted course-assignment tokens.
+- `src/lib/tutor-core.ts`, `src/lib/tutor-prompts.ts`, `src/lib/tutor-schemas.ts`, `src/lib/tutor.functions.ts`:
+  required generated phase assignments, verified objective keys, and public-plan protection.
+- `src/routes/index.tsx`: assignment interaction, bounded responses, hints, follow-ups, feedback/history,
+  remediation, and attempt-derived phase completion.
+- `src/integrations/supabase/types.ts`: assessment-attempt table types.
+- `drizzle/migrations/0003_course_assessment_attempts.sql` (new): append-only attempt table, client read-only grants,
+  and owner-scoped RLS.
+- `src/test/course-assessment.test.ts` (new), `src/test/course-plans.test.ts`,
+  `src/test/tutor-core.test.ts`, `src/test/answer-key.test.ts`: scoring, evidence validation, ambiguous reasoning,
+  hints/retakes, plan personalization, key protection, and independent key verification.
+- `supabase/tests/0003_course_assessment_attempts.test.sql` (new): own-user read, cross-user isolation, duplicate
+  persistence behavior, and client write restrictions.
+- `IMPLEMENTATION_STATUS.md`.
+
+### Verification, setup, and limitations
+
+- `git diff --check`: passed after the assessment changes.
+- Targeted Vitest (`src/test/course-assessment.test.ts`, `src/test/course-plans.test.ts`,
+  `src/test/tutor-core.test.ts`, `src/test/answer-key.test.ts`): attempted; `npm test -- --run ...` exited 1
+  because `vitest` is not installed (`'vitest' is not recognized...`), so no tests executed.
+- Production build: attempted; `npm run build` exited 1 because `vite` is not installed (`'vite' is not
+  recognized...`), so no build executed. Typecheck and lint were not run because the local project
+  toolchain/dependencies are absent.
+- The pgTAP persistence/RLS test and migration were not run/applied; Supabase CLI and `psql` are unavailable.
+  No database was accessed. No dependency install was attempted.
+- Before release, apply `drizzle/migrations/0003_course_assessment_attempts.sql` after
+  `0002_structured_courses.sql` using the existing Supabase migration process. Existing server configuration must
+  retain `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_URL`, and `QUESTION_SIGNING_SECRET`; the current AI provider is
+  reused. Google/Firebase setup is unchanged and not part of this phase.
+- Subjective grading remains provider-assisted rubric interpretation, not a formal proof of understanding; strict
+  schemas and evidence quotes constrain it but do not make it infallible. Assessment completion is distinct from
+  independently demonstrated concept mastery. Existing course plans generated before phase assignments remain
+  legacy plans and do not acquire graded assignments automatically. Hint-use and completed-lesson state are
+  learner actions and are not proctored evidence. Rotating the answer-signing secret invalidates existing
+  assignment tokens.
+- No deployment, commit, or push was performed.
+
 ## Current phase: personalized structured courses
 
 Course-generation changes are implemented in this worktree; dependency and database tooling are unavailable for
@@ -21,8 +97,9 @@ database.
   The prompt distinguishes self-report from observed performance and asks for scaffolded conceptual, applied, and
   reasoning work.
 - A generated course is shown as a proposal before it is saved. Starting it creates a new course row, leaving older
-  plans intact. The structured plan is stored in `courses.plan`; learner-specific position, completed topics/phases,
-  and assessment responses are stored separately in `course_progress`.
+  plans intact. The structured plan is stored in `courses.plan`; learner-specific position and completed topics
+  are stored separately in `course_progress`. Graded phase attempts and their histories are stored in the
+  append-only `course_assessment_attempts` table.
 - The player presents lessons, examples, practice hints/criteria, and phase assessments. It saves position and
   responses and blocks forward navigation over unmet topic prerequisites and incomplete earlier phases. A learner
   can skip a topic only when all covered concepts have recorded demonstrated status and at least two clean
@@ -52,15 +129,16 @@ database.
 - Production build: **not run**; `vite` is not installed. Typecheck: **not run**; TypeScript is not installed.
 - SQL persistence/RLS pgTAP coverage was added in `supabase/tests/0002_structured_courses.test.sql` but was not run;
   `supabase` CLI and `psql` are not installed and no live database was accessed. The migration has not been applied.
-- Phase completion is currently learner self-assessment against the generated rubric, not automatic grading. Lesson
-  completion is an explicit learner action; the existing tutor session is not yet tightly coupled to course lesson
-  completion. A manually transcribed or photo-read source material excerpt informs generation but is not retained as
-  a separately cited source in the saved plan.
+- Lesson completion is an explicit learner action; the existing tutor session is not yet tightly coupled to course
+  lesson completion. A manually transcribed or photo-read source material excerpt informs generation but is not
+  retained as a separately cited source in the saved plan. See the current assessment phase above for new-plan
+  assignment grading and the legacy-plan limitation.
 
 ### Setup and prioritized follow-up
 
-1. Apply `drizzle/migrations/0002_structured_courses.sql` through the existing Supabase/Drizzle migration process
-   before using the new course loading and progress queries; then run the new pgTAP test.
+1. Apply `drizzle/migrations/0002_structured_courses.sql` and then
+   `drizzle/migrations/0003_course_assessment_attempts.sql` through the existing Supabase/Drizzle migration
+   process before using course progress and assessment queries; then run both pgTAP tests.
 2. Install project dependencies in an environment where the configured package manager can resolve the lockfile,
    then run the targeted Vitest tests, full tests, typecheck, lint, and production build. The prior documented
    `npm install` resolver error remains unresolved; no install was retried here.

@@ -60,6 +60,25 @@ export async function runTutor(gen: Generate, action: Action, payload: Record<st
     throw new TutorError(UNRELIABLE);
   }
 
+  if (action === "course") {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const note = attempt
+        ? "\n\nA previous course assignment had an answer key that did not match an independent solve. Rework each objective question and verify its correctIndex."
+        : "";
+      const value = await generateValid(gen, action, promptFor(action, payload) + note, tier, temperature);
+      const plan = normalize(action, value, payload) as {
+        phases: { assessment: { objectiveQuestions: { question: string; options: string[]; correctIndex: number }[] } }[];
+      };
+      const checks = await Promise.all(plan.phases.flatMap((phase) =>
+        phase.assessment.objectiveQuestions.map((question) =>
+          keyIsVerified(gen, question.question, question.options, question.correctIndex),
+        ),
+      ));
+      if (checks.every(Boolean)) return JSON.stringify(plan);
+    }
+    throw new TutorError("The tutor couldn't create an assignment with verified answer keys. Please try again.");
+  }
+
   const value = await generateValid(gen, action, promptFor(action, payload), tier, temperature);
   return JSON.stringify(normalize(action, value, payload));
 }
