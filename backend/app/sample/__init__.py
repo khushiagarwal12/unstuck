@@ -1,1 +1,0 @@
-"""Curated sample curriculum content."""
