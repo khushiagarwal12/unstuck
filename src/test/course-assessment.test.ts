@@ -36,7 +36,7 @@ const grade = (score: number, needsFollowUp = false, evidence = score ? "the sam
     needsFollowUp,
     followUpQuestion: needsFollowUp ? "What operation was applied to both sides?" : null,
   }],
-}));
+}), { "open-1": "The same operation preserves equality. It is 1. I don't know." });
 
 describe("phase assignment scoring and progression", () => {
   it("passes a high independently completed assignment without treating it as mastery", () => {
@@ -49,7 +49,7 @@ describe("phase assignment scoring and progression", () => {
   });
 
   it("routes partial performance to targeted remediation", () => {
-    const result = scoreAssignment(assignment, { objectiveAnswers: { "objective-1": 0 }, writtenAnswers: { "open-1": "The same operation preserves equality." } }, grade(1), 0, 0);
+    const result = scoreAssignment(assignment, { objectiveAnswers: { "objective-1": 1 }, writtenAnswers: { "open-1": "I am not sure." } }, grade(0), 0, 0);
     expect(result.percentage).toBe(50);
     expect(result.passed).toBe(false);
     expect(result.recommendedAction).toBe("targeted-remediation");

@@ -10,7 +10,7 @@ import { runTutor } from "./tutor-core";
 import { ACTIONS } from "./tutor-schemas";
 import { signingConfigFromEnvironment } from "./answer-key.server";
 import { firestoreAnswerReplayStore } from "./answer-replay.server";
-import { optionalFirebaseUserId } from "@/integrations/firebase/auth-middleware";
+import { optionalFirebaseUserId } from "@/integrations/firebase/auth-user.server";
 import { recordVerifiedAnswer } from "./learning-evidence.server";
 
 const input = z.object({

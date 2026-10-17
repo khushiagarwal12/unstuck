@@ -320,7 +320,6 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
   const ask = useServerFn(askTutor);
   const importProgress = useServerFn(importGuestProgress);
   const gradeAssignment = useServerFn(evaluateCourseAssignment);
-  const saveAssessmentHint = useServerFn(recordAssessmentHint);
   const readWorkspace = useServerFn(loadWorkspace);
   const updateConceptReview = useServerFn(rescheduleConceptFn);
   const deleteSavedConcept = useServerFn(deleteConceptFn);
@@ -584,6 +583,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
   learn: (t?: string) => void; dismiss: (c: Concept) => void;
 }) {
   const readPhoto = useServerFn(readProblem);
+  const saveAssessmentHint = useServerFn(recordAssessmentHint);
   const capabilities = useServerFn(getCapabilities);
   const createSavedCourse = useServerFn(saveCourseFn);
   const deleteSavedCourse = useServerFn(deleteCourseFn);

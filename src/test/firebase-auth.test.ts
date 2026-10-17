@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { verifyFirebaseIdToken } from "@/integrations/firebase/auth-middleware";
+import { verifyFirebaseIdToken } from "@/integrations/firebase/auth-user.server";
 
 describe("Firebase ID token verification", () => {
   it("uses only the UID returned by token verification", async () => {

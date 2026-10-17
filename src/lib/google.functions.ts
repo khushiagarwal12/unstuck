@@ -7,7 +7,7 @@ import { LANGUAGE_CODES, ttsCode } from "./languages";
 import { enforceLimits } from "./limits.server";
 import { enforceSharedLimits } from "./shared-limits.server";
 import { extractJson } from "./tutor-schemas";
-import { optionalFirebaseUserId } from "@/integrations/firebase/auth-middleware";
+import { optionalFirebaseUserId } from "@/integrations/firebase/auth-user.server";
 
 /** Which optional Google features are configured. Contains no secrets. */
 export const getCapabilities = createServerFn({ method: "GET" }).handler(async () => ({

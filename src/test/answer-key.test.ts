@@ -35,6 +35,7 @@ describe("server-held answer keys", () => {
     expect(await checkAnswerKey(transfer["answerToken"] as string, "transfer", 1, secret)).toEqual({
       correct: true,
       explanation: "Why B is right.",
+      context: "A new setting",
     });
   });
 

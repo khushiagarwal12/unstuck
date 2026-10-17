@@ -55,8 +55,10 @@ describe("personalized course plans", () => {
     };
     const resultA = JSON.parse(await runTutor(scripted(planA), "course", learnerA));
     const resultB = JSON.parse(await runTutor(scripted(planB), "course", learnerB));
-    expect(prompts[0]).toContain("Needs more practice");
-    expect(prompts[1]).toContain("Demonstrated under current criteria");
+    // Answer-verification solves are interleaved with the two course requests; compare only the latter.
+    const coursePrompts = prompts.filter((prompt) => !prompt.includes("Solve this multiple-choice question yourself"));
+    expect(coursePrompts[0]).toContain("Needs more practice");
+    expect(coursePrompts[1]).toContain("Demonstrated under current criteria");
     expect(courseSchema.parse(resultA).phases[0]?.topics[0]?.name).toBe("Inverse operations");
     expect(courseSchema.parse(resultB).phases[0]?.topics[0]?.name).toBe("Variables on both sides");
     expect(resultA.phases[0].topics[0].name).not.toBe(resultB.phases[0].topics[0].name);

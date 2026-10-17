@@ -4,12 +4,37 @@ Updated: 2026-10-17
 Integration branch: `firebase-firestore-integration`
 Baseline: `khushiagarwal12-unstuck-auth-diagnostics` at `a5fc8fe`
 
+## Verification update (2026-10-17)
+
+Fixes made after an independent review of commit `a5a263c`:
+
+- **Production build:** `auth-middleware.ts` pulled `firebase-admin` and `@tanstack/react-start/server` into the browser
+  bundle and failed import protection. Token reading now lives in `auth-user.server.ts`; the middleware imports it lazily.
+- **Node server output:** the explicit Vite config had no Nitro plugin, so no `.output/server/index.mjs` existed for the
+  Dockerfile. `nitro()` is restored (`NITRO_PRESET` overrides, default `node-server`).
+- **Installs:** `package-lock.json` was out of sync and lacked a Linux `rolldown` binding; a plain `npm install` crashed with an
+  npm resolver error. The lockfile is regenerated and `.npmrc` sets `legacy-peer-deps=true`, which avoids the crash.
+- **Assignment hints:** `saveAssessmentHint` was defined in `SignedIn` but used in `Dashboard`, so every hint request failed with
+  a ReferenceError. The hook now lives in `Dashboard`.
+- **Tests:** fixed stale tests (third `validateSubjectiveGrades` argument, new `context` field, interleaved verification prompt)
+  and a wrong 50% expectation in the "targeted remediation" case that had never executed.
+
+Verified in the sandbox (Node 22.22, npm 10.9): `vitest run` 69/69 pass; `vite build` succeeds and writes
+`.output/server/index.mjs`; that server started and answered `GET /` with 200.
+
+Not verified: sign-in against a real Firebase project, Firestore reads/writes and rules (the emulator could not be
+downloaded here), Vertex AI calls, a Docker image build, and any browser interaction. `tsc --noEmit` still reports 107 errors
+(mostly strict-mode style; about 25 substantive, in `index.tsx`, `LearnSession.tsx`, `LearningHelper.tsx`,
+`workspace.functions.ts`, `answer-key.server.ts`, `shared-limits.server.ts`). The build does not type-check.
+
+Known gaps: `saveCourse` stores the plan the browser sends, so a learner can edit their own phase gating (sealed assignment
+questions are unaffected); guest rate limiting trusts the first `X-Forwarded-For` value, which is likely spoofable on Cloud Run.
+
 ## Scope and status
 
 This work replaces the Lovable Auth/Supabase persistence foundation with Firebase Authentication, Cloud Firestore,
 and Gemini on Vertex AI while retaining the existing learning flows. No existing Supabase learner data is migrated,
-as requested. This is an in-progress, uncommitted local branch. No deployment, push, billing change, or cloud
-resource change was performed.
+as requested. This branch is pushed to GitHub. No deployment, billing change, or cloud resource change was performed.
 
 The code paths and local test suite are being updated. Live Firebase/Google Cloud behavior cannot be verified
 without project credentials and configured services; the application is not ready for a controlled demo until the
