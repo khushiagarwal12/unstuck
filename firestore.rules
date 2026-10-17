@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // All learner data is accessed through server functions which verify Firebase ID tokens
+    // and enforce the authenticated UID. The browser never receives direct data access.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

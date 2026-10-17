@@ -1,9 +1,17 @@
-# Cloud Run image. The Lovable build targets Cloudflare, so we build the Node server preset here.
+# Cloud Run image. Build the TanStack Start app with Nitro's Node server preset.
 FROM node:22-slim AS build
 WORKDIR /app
-COPY package.json ./
-RUN npm install --no-package-lock --no-audit --no-fund
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY . .
+ARG VITE_FIREBASE_API_KEY
+ARG VITE_FIREBASE_AUTH_DOMAIN
+ARG VITE_FIREBASE_PROJECT_ID
+ARG VITE_FIREBASE_APP_ID
+ENV VITE_FIREBASE_API_KEY=$VITE_FIREBASE_API_KEY \
+    VITE_FIREBASE_AUTH_DOMAIN=$VITE_FIREBASE_AUTH_DOMAIN \
+    VITE_FIREBASE_PROJECT_ID=$VITE_FIREBASE_PROJECT_ID \
+    VITE_FIREBASE_APP_ID=$VITE_FIREBASE_APP_ID
 ENV NITRO_PRESET=node-server
 RUN npm run build
 

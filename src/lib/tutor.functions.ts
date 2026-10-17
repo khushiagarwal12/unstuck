@@ -2,9 +2,17 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
 import { pickProvider } from "./ai-provider.server";
+import { checkAnswerKey, protectTutorQuestion } from "./answer-key.server";
+import { protectCoursePlan } from "./course-assessment.server";
 import { enforceLimits } from "./limits.server";
+import { enforceSharedLimits } from "./shared-limits.server";
+import { signCoursePlan } from "./plan-signature.server";
 import { runTutor } from "./tutor-core";
 import { ACTIONS } from "./tutor-schemas";
+import { signingConfigFromEnvironment } from "./answer-key.server";
+import { firestoreAnswerReplayStore } from "./answer-replay.server";
+import { optionalFirebaseUserId } from "@/integrations/firebase/auth-user.server";
+import { recordVerifiedAnswer } from "./learning-evidence.server";
 
 const input = z.object({
   action: z.enum(ACTIONS),
@@ -18,7 +26,51 @@ export const askTutor = createServerFn({ method: "POST" })
     return parsed;
   })
   .handler(async ({ data }) => {
+    const userId = await optionalFirebaseUserId();
+    await enforceSharedLimits(userId ?? undefined);
     enforceLimits();
+    const signingConfig = signingConfigFromEnvironment(process.env);
     const json = await runTutor(pickProvider(process.env), data.action, data.payload);
-    return { json };
+    if (data.action === "course") {
+      const protectedPlan = await protectCoursePlan(json, signingConfig);
+      return {
+        json: protectedPlan,
+        planSignature: (await signCoursePlan(JSON.parse(protectedPlan), signingConfig)) as
+          string | null,
+      };
+    }
+    if (data.action !== "start" && data.action !== "transfer") return { json, planSignature: null };
+    return {
+      planSignature: null,
+      json: await protectTutorQuestion(
+        json,
+        data.action === "start" ? "diagnostic" : "transfer",
+        signingConfig,
+        typeof data.payload["concept"] === "string" ? data.payload["concept"] : undefined,
+      ),
+    };
+  });
+
+const answerInput = z.object({
+  kind: z.enum(["diagnostic", "transfer"]),
+  answerToken: z.string().min(1).max(4096),
+  choice: z.number().int().min(0).max(3),
+});
+
+export const checkTutorAnswer = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) => answerInput.parse(d))
+  .handler(async ({ data }) => {
+    const userId = await optionalFirebaseUserId();
+    await enforceSharedLimits(userId ?? undefined);
+    enforceLimits();
+    const result = await checkAnswerKey(
+      data.answerToken,
+      data.kind,
+      data.choice,
+      signingConfigFromEnvironment(process.env),
+      Date.now(),
+      firestoreAnswerReplayStore,
+    );
+    if (userId) await recordVerifiedAnswer(userId, data.answerToken, data.kind, result);
+    return result;
   });

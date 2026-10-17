@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { RateLimiter } from "@/lib/rate-limit";
 import { type Generate, runTutor } from "@/lib/tutor-core";
 import { extractJson, normalize } from "@/lib/tutor-schemas";
+import { promptFor } from "@/lib/tutor-prompts";
 
 /** Test double: answers each call with the next queued reply and records the prompts. */
 function scripted(...replies: (string | object)[]) {
@@ -83,28 +84,220 @@ describe("output validation", () => {
 
 describe("rules the model cannot be trusted with", () => {
   const diag = {
+    demonstrated: [],
     hypotheses: [{ label: "x", summary: "You may be mixing it up.", confidence: "low" }],
+    unresolved: ["Whether a prerequisite is missing."],
     needsFollowUp: true,
     followUp: { question: "Which?", options: ["a", "b"], why: "to separate them" },
     recommendedStyle: "visual",
   };
 
   it("stops asking follow-ups after two", () => {
-    expect((normalize("diagnose", diag, { followUpCount: 2 }) as { needsFollowUp: boolean }).needsFollowUp).toBe(false);
-    expect((normalize("diagnose", diag, { followUpCount: 1 }) as { needsFollowUp: boolean }).needsFollowUp).toBe(true);
+    expect(
+      (normalize("diagnose", diag, { followUpCount: 2 }) as { needsFollowUp: boolean })
+        .needsFollowUp,
+    ).toBe(false);
+    expect(
+      (normalize("diagnose", diag, { followUpCount: 1 }) as { needsFollowUp: boolean })
+        .needsFollowUp,
+    ).toBe(true);
+  });
+
+  it("keeps a single observed answer at low confidence", () => {
+    const out = normalize(
+      "diagnose",
+      {
+        ...diag,
+        hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
+      },
+      { learnerAnswer: "A", diagnosticCorrect: false },
+    ) as typeof diag;
+    expect(out.hypotheses[0]?.confidence).toBe("low");
+    expect(out.needsFollowUp).toBe(true);
+  });
+
+  it("caps confidence at medium until three answers are observed", () => {
+    const out = normalize(
+      "diagnose",
+      {
+        ...diag,
+        hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
+      },
+      {
+        learnerAnswer: "A",
+        diagnosticCorrect: false,
+        followUpAnswers: [{ q: "Why?", a: "B" }],
+        followUpCount: 1,
+      },
+    ) as typeof diag;
+    expect(out.hypotheses[0]?.confidence).toBe("medium");
+  });
+
+  it("allows higher confidence only after three observed answers", () => {
+    const out = normalize(
+      "diagnose",
+      {
+        ...diag,
+        hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
+      },
+      {
+        learnerAnswer: "A",
+        diagnosticCorrect: false,
+        followUpAnswers: [
+          { q: "Why?", a: "B" },
+          { q: "Another check?", a: "C" },
+        ],
+        followUpCount: 2,
+      },
+    ) as typeof diag;
+    expect(out.hypotheses[0]?.confidence).toBe("high");
+    expect(out.needsFollowUp).toBe(false);
+  });
+
+  it("lowers confidence when the learner disputes a hypothesis even after more evidence", () => {
+    const out = normalize(
+      "diagnose",
+      {
+        ...diag,
+        hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
+      },
+      {
+        learnerAnswer: "A",
+        followUpAnswers: [
+          { q: "Why?", a: "B" },
+          { q: "Another check?", a: "C" },
+        ],
+        followUpCount: 2,
+        disputedHypotheses: ["x"],
+      },
+    ) as typeof diag;
+    expect(out.hypotheses[0]?.confidence).toBe("low");
+  });
+
+  it("instructs the diagnosis to keep self-report distinct from evidence and surface contradictions", () => {
+    const prompt = promptFor("diagnose", {
+      learnerPreferences: { selfReportedLevel: "confident" },
+    });
+    expect(prompt).toContain("self-report distinct from demonstrated evidence");
+    expect(prompt).toContain("contradictory");
+    expect(prompt).toContain("disputed");
   });
 
   it("only lets a course prerequisite point at an earlier topic", () => {
+    const assessment = (id: string) => ({
+      title: "a",
+      purpose: "p",
+      objectiveQuestions: [
+        {
+          id: `${id}-objective`,
+          objective: "o",
+          question: "q",
+          options: ["a", "b", "c", "d"],
+          correctIndex: 1,
+          explanation: "e",
+          hint: "h",
+          points: 1,
+        },
+      ],
+      openQuestions: [
+        {
+          id: `${id}-open`,
+          objective: "o",
+          prompt: "p",
+          referenceCriteria: "r",
+          rubric: [{ criterion: "c", points: 1 }],
+          hint: "h",
+        },
+      ],
+      passCriteria: "p",
+    });
     const course = {
-      title: "t", goal: "g", outcomes: ["o"],
-      topics: [
-        { name: "A", why: "w", prerequisites: ["B"], minutes: 5 },
-        { name: "B", why: "w", prerequisites: ["A", "Outside"], minutes: 5 },
-        { name: "C", why: "w", prerequisites: ["a", "b"], minutes: 5 },
+      title: "t",
+      goal: "g",
+      outcomes: ["o"],
+      phases: [
+        {
+          id: "phase-1",
+          title: "First",
+          purpose: "p",
+          topics: [
+            {
+              id: "a",
+              name: "A",
+              why: "w",
+              covers: ["A"],
+              prerequisites: ["b"],
+              objectives: ["o"],
+              subtopics: [{ name: "s", objective: "o" }],
+              lesson: {
+                explanation: "e",
+                examples: [{ prompt: "p", walkthrough: "w" }],
+                guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }],
+              },
+              minutes: 5,
+            },
+            {
+              id: "b",
+              name: "B",
+              why: "w",
+              covers: ["B"],
+              prerequisites: ["a", "Outside"],
+              objectives: ["o"],
+              subtopics: [{ name: "s", objective: "o" }],
+              lesson: {
+                explanation: "e",
+                examples: [{ prompt: "p", walkthrough: "w" }],
+                guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }],
+              },
+              minutes: 5,
+            },
+          ],
+          assessment: assessment("first"),
+        },
+        {
+          id: "phase-2",
+          title: "Second",
+          purpose: "p",
+          topics: [
+            {
+              id: "c",
+              name: "C",
+              why: "w",
+              covers: ["C"],
+              prerequisites: ["a", "b"],
+              objectives: ["o"],
+              subtopics: [{ name: "s", objective: "o" }],
+              lesson: {
+                explanation: "e",
+                examples: [{ prompt: "p", walkthrough: "w" }],
+                guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }],
+              },
+              minutes: 5,
+            },
+            {
+              id: "d",
+              name: "D",
+              why: "w",
+              covers: ["D"],
+              prerequisites: ["c"],
+              objectives: ["o"],
+              subtopics: [{ name: "s", objective: "o" }],
+              lesson: {
+                explanation: "e",
+                examples: [{ prompt: "p", walkthrough: "w" }],
+                guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }],
+              },
+              minutes: 5,
+            },
+          ],
+          assessment: assessment("second"),
+        },
       ],
     };
-    const out = normalize("course", course, {}) as { topics: { prerequisites: string[] }[] };
-    expect(out.topics.map((t) => t.prerequisites)).toEqual([[], ["A"], ["a", "b"]]);
+    const out = normalize("course", course, {}) as {
+      topics: { id: string; prerequisites: string[] }[];
+    };
+    expect(out.topics.map((t) => t.prerequisites)).toEqual([[], ["a"], ["a", "b"], ["c"]]);
   });
 });
 

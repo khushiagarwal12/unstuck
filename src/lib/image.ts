@@ -1,5 +1,8 @@
 /** Shrink a photo in the browser so it uploads quickly: longest side 1600px, JPEG. Returns base64 without the prefix. */
-export async function shrinkImage(file: File, maxSide = 1600): Promise<{ mimeType: "image/jpeg"; data: string }> {
+export async function shrinkImage(
+  file: File,
+  maxSide = 1600,
+): Promise<{ mimeType: "image/jpeg"; data: string }> {
   const bitmap = await createImageBitmap(file);
   const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement("canvas");
