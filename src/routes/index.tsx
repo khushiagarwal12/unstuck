@@ -1,22 +1,30 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useState } from "react";
-import type { User } from "@supabase/supabase-js";
+import { z } from "zod";
+import { getFirebaseAuth, isFirebaseConfigured, onAuthStateChanged, signInWithGoogle, signOut as firebaseSignOut, type User } from "@/integrations/firebase/client";
 import { LearningHelper } from "@/components/LearningHelper";
-import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable/index";
 import { askTutor } from "@/lib/tutor.functions";
 import { publicCourseSchema, type CoursePlan } from "@/lib/tutor-schemas";
 import { getCapabilities, readProblem } from "@/lib/google.functions";
 import { shrinkImage } from "@/lib/image";
 import { assignmentResultSchema, type AssignmentResult } from "@/lib/course-assessment";
-import { evaluateCourseAssignment } from "@/lib/course-assessment.functions";
-import { importGuestProgress } from "@/lib/progress.functions";
+import { evaluateCourseAssignment, recordAssessmentHint } from "@/lib/course-assessment.functions";
 import { appendGuestProgress, clearGuestProgress, GUEST_PROGRESS_KEY, readGuestProgress, type GuestProgressBundle } from "@/lib/guest-progress";
 import { adoptGuestSession } from "@/lib/session-storage";
 import { daysSincePractice, rankDueConcepts, summarizeCourses } from "@/lib/learner-dashboard";
 import { CoachCard } from "@/components/CoachCard";
 import { LearnSession, type SessionRecord } from "@/components/LearnSession";
+import {
+  deleteConcept as deleteConceptFn,
+  deleteCourse as deleteCourseFn,
+  importGuestProgress,
+  loadWorkspace,
+  rescheduleConcept as rescheduleConceptFn,
+  saveCourse as saveCourseFn,
+  saveCourseProgress as saveCourseProgressFn,
+  saveProfile as saveProfileFn,
+} from "@/lib/workspace.functions";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -46,7 +54,10 @@ type CourseProgress = {
   assessment_responses: Record<string, string>;
   updated_at: string;
 };
-type CourseProgressPatch = Partial<Omit<CourseProgress, "user_id" | "course_id" | "updated_at">>;
+type CourseProgressPatch = Partial<Pick<CourseProgress, "current_phase_id" | "current_topic_id">> & {
+  completeTopicId?: string;
+  skipTopicIds?: string[];
+};
 type CourseAssessmentAttempt = {
   attempt_id: string;
   course_id: string;
@@ -56,6 +67,12 @@ type CourseAssessmentAttempt = {
   hints_used: number;
   retry_count: number;
   created_at: string;
+};
+type ImportedGuestActivity = {
+  id: string;
+  saved_at: string;
+  source: "unverified-guest-history";
+  record: { concept: string; correct: boolean; explanation: string | null; status: "Not assessed" };
 };
 
 type View = { kind: "home" } | { kind: "learn"; topic?: string; key: number } | { kind: "settings" };
@@ -79,39 +96,40 @@ function Index() {
 
   useEffect(() => {
     let hadUser = false;
-    let receivedAuthEvent = false;
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
-      receivedAuthEvent = true;
-      if (session?.user) {
-        hadUser = true;
-        setAuthNotice(null);
-        try { adoptGuestSession(window.localStorage, session.user.id); } catch {
-          setAuthNotice("Your guest session is still saved on this device, but we couldn't move it into your account automatically.");
-        }
-      } else if (hadUser) {
-        setAuthNotice("Your sign-in session ended. Continue with Google to reopen your learning workspace.");
-        hadUser = false;
-      }
-      setUser(session?.user ?? null);
-      setAuthReady(true);
-    });
-    supabase.auth.getUser().then(({ data, error }) => {
-      if (receivedAuthEvent) return;
-      setUser(data.user ?? null);
-      hadUser = !!data.user;
-      if (error) setAuthNotice("We couldn't confirm your sign-in. Please try Google sign-in again.");
-      setAuthReady(true);
-    }).catch(() => {
-      if (receivedAuthEvent) return;
-      setAuthNotice("We couldn't confirm your sign-in. Please check your connection and try Google sign-in again.");
-      setAuthReady(true);
-    });
     try {
       setGuestProgress(readGuestProgress(window.localStorage));
     } catch {
       setGuestSaveError("We couldn't read saved guest progress on this device. It has not been deleted.");
     }
-    return () => sub.subscription.unsubscribe();
+    if (!isFirebaseConfigured()) {
+      setAuthNotice("Google sign-in is not configured yet. Guest learning remains available on this device.");
+      setAuthReady(true);
+      return;
+    }
+    let unsubscribe = () => {};
+    try {
+      unsubscribe = onAuthStateChanged(getFirebaseAuth(), (authUser) => {
+        if (authUser) {
+          hadUser = true;
+          setAuthNotice(null);
+          try { adoptGuestSession(window.localStorage, authUser.uid); } catch {
+            setAuthNotice("Your guest session is still saved on this device, but we couldn't move it into your account automatically.");
+          }
+        } else if (hadUser) {
+          setAuthNotice("Your sign-in session ended. Continue with Google to reopen your learning workspace.");
+          hadUser = false;
+        }
+        setUser(authUser);
+        setAuthReady(true);
+      }, () => {
+        setAuthNotice("We couldn't confirm your sign-in. Please check your connection and try again.");
+        setAuthReady(true);
+      });
+    } catch {
+      setAuthNotice("Firebase sign-in couldn't be initialized. Guest learning remains available.");
+      setAuthReady(true);
+    }
+    return () => unsubscribe();
   }, []);
 
   if (!authReady) return <Shell><p className="text-muted-foreground">Loading…</p></Shell>;
@@ -238,11 +256,13 @@ function SignInButton({ small }: { small?: boolean }) {
   const go = async () => {
     setBusy(true); setErr(null);
     try {
-      const r = await lovable.auth.signInWithOAuth("google", { redirect_uri: window.location.origin });
-      if (r.error) { setErr("Google sign-in didn't finish. Please try again."); setBusy(false); return; }
-      if (!r.redirected) setBusy(false);
-    } catch {
-      setErr("Google sign-in couldn't be started. Check your connection and try again.");
+      await signInWithGoogle();
+      setBusy(false);
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? String(error.code) : "";
+      setErr(code === "auth/popup-closed-by-user"
+        ? "Google sign-in was cancelled. You can try again or continue as a guest."
+        : "Google sign-in couldn't be completed. Check your connection and try again.");
       setBusy(false);
     }
   };
@@ -300,11 +320,19 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
   const ask = useServerFn(askTutor);
   const importProgress = useServerFn(importGuestProgress);
   const gradeAssignment = useServerFn(evaluateCourseAssignment);
+  const saveAssessmentHint = useServerFn(recordAssessmentHint);
+  const readWorkspace = useServerFn(loadWorkspace);
+  const updateConceptReview = useServerFn(rescheduleConceptFn);
+  const deleteSavedConcept = useServerFn(deleteConceptFn);
+  const updateProfile = useServerFn(saveProfileFn);
+  const deleteSavedCourse = useServerFn(deleteCourseFn);
+  const updateCoursePosition = useServerFn(saveCourseProgressFn);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [concepts, setConcepts] = useState<Concept[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
   const [courseProgress, setCourseProgress] = useState<Record<string, CourseProgress>>({});
   const [assessmentAttempts, setAssessmentAttempts] = useState<CourseAssessmentAttempt[]>([]);
+  const [importedGuestActivity, setImportedGuestActivity] = useState<ImportedGuestActivity[]>([]);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
@@ -324,64 +352,43 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
       setLoadErr(error instanceof Error ? error.message : "We couldn't safely import your guest progress. It is still saved on this device.");
       return;
     }
-    const [p, c, k, cp, ca] = await Promise.all([
-      supabase.from("profiles").select("*").eq("id", user.id).maybeSingle(),
-      supabase.from("concepts").select("*").order("updated_at", { ascending: false }),
-      supabase.from("courses").select("*").order("created_at", { ascending: false }),
-      supabase.from("course_progress").select("*"),
-      supabase.from("course_assessment_attempts").select("*").order("created_at", { ascending: false }),
-    ]);
-    if (p.error || c.error || k.error || cp.error || ca.error) { setLoadErr("We couldn't load your learning profile."); return; }
-    let prof = p.data as Profile | null;
-    if (!prof) {
-      const ins = await supabase.from("profiles").insert({ id: user.id, display_name: (user.user_metadata?.full_name as string) ?? null, avatar_url: (user.user_metadata?.avatar_url as string) ?? null }).select().single();
-      prof = ins.data as Profile | null;
-    }
-    setProfile(prof);
-    setConcepts((c.data ?? []) as Concept[]);
-    const parsedCourses: Course[] = [];
-    for (const row of k.data ?? []) {
-      let plan: CoursePlan | null = null;
-      if (row.plan) {
-        const parsed = publicCourseSchema.safeParse(row.plan);
-        if (parsed.success) plan = parsed.data;
+    try {
+      const workspace = await readWorkspace({ data: { displayName: user.displayName, avatarUrl: user.photoURL } });
+      const prof = workspace.profile as Profile | null;
+      setProfile(prof);
+      setConcepts(workspace.concepts as Concept[]);
+      const parsedCourses: Course[] = [];
+      for (const row of workspace.courses as Record<string, unknown>[]) {
+        let plan: CoursePlan | null = null;
+        if (row.plan) {
+          const parsed = publicCourseSchema.safeParse(row.plan);
+          if (parsed.success) plan = parsed.data;
+        }
+        parsedCourses.push({ ...row, plan, topics: (row.topics ?? []) as unknown as Topic[] } as Course);
       }
-      parsedCourses.push({ ...row, plan, topics: (row.topics ?? []) as unknown as Topic[] } as Course);
+      setCourses(parsedCourses);
+      setCourseProgress(Object.fromEntries(Object.values(workspace.courseProgress).map((row) => [row.course_id, {
+        ...row,
+        assessment_responses: (row.assessment_responses ?? {}) as Record<string, string>,
+      } as CourseProgress])));
+      setAssessmentAttempts(workspace.assessmentAttempts.flatMap((row) => {
+        const evaluation = assignmentResultSchema.safeParse(row.evaluation);
+        return evaluation.success ? [{ ...row, evaluation: evaluation.data } as CourseAssessmentAttempt] : [];
+      }));
+      setImportedGuestActivity(workspace.guestActivity.flatMap((row) => {
+        const parsed = zImportedGuestActivity.safeParse(row);
+        return parsed.success ? [parsed.data] : [];
+      }));
+    } catch {
+      setLoadErr("We couldn't load your Firebase learning workspace. Check your connection and retry.");
     }
-    setCourses(parsedCourses);
-    setCourseProgress(Object.fromEntries((cp.data ?? []).map((row) => [row.course_id, {
-      ...row,
-      assessment_responses: (row.assessment_responses ?? {}) as Record<string, string>,
-    } as CourseProgress])));
-    setAssessmentAttempts((ca.data ?? []).flatMap((row) => {
-      const evaluation = assignmentResultSchema.safeParse(row.evaluation);
-      return evaluation.success ? [{ ...row, evaluation: evaluation.data } as CourseAssessmentAttempt] : [];
-    }));
-  }, [user, importProgress, onGuestImport]);
+  }, [user, importProgress, onGuestImport, readWorkspace]);
   useEffect(() => { load(); }, [load]);
 
   const prefs = profile ? { goal: profile.goal, subject: profile.subject, selfReportedLevel: profile.level, studyMinutesPerSession: profile.study_minutes, preferredStyles: profile.preferred_styles } : undefined;
 
-  const record = async (r: SessionRecord) => {
-    const prev = concepts.find((c) => c.concept.toLowerCase() === r.concept.toLowerCase());
-    const interval = r.clean ? Math.min((prev?.review_interval_days ?? 1) * 2, 30) : 1;
-    const row = {
-      user_id: user.id,
-      concept: prev?.concept ?? r.concept,
-      status: r.status,
-      misconceptions: r.misconceptions.length ? r.misconceptions : prev?.misconceptions ?? [],
-      styles: Array.from(new Set([...(prev?.styles ?? []), ...r.styles])),
-      hints_used: (prev?.hints_used ?? 0) + r.hintsUsed,
-      attempts: (prev?.attempts ?? 0) + 1,
-      clean_successes: (prev?.clean_successes ?? 0) + (r.clean ? 1 : 0),
-      review_interval_days: interval,
-      review_at: new Date(Date.now() + interval * 86400000).toISOString(),
-      last_explanation: r.explanation ?? prev?.last_explanation ?? null,
-      updated_at: new Date().toISOString(),
-    };
-
-    const { data } = await supabase.from("concepts").upsert(row, { onConflict: "user_id,concept" }).select().single();
-    if (data) setConcepts((cs) => [data as Concept, ...cs.filter((c) => c.id !== (data as Concept).id)]);
+  const record = async (_record: SessionRecord) => {
+    await load();
   };
 
   const rememberAssessmentAttempt = (attempt: CourseAssessmentAttempt) => {
@@ -401,9 +408,9 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
     setAssessmentAttempts((current) => current.filter((attempt) => attempt.course_id !== courseId));
     try {
       const prefixes = [
-        `unstuck.helper.v1:${user.id}:${courseId}:`,
-        `unstuck.course-hints.v1:${user.id}:${courseId}`,
-        `unstuck.course-assessment-pending.v1:${user.id}:${courseId}:`,
+        `unstuck.helper.v1:${user.uid}:${courseId}:`,
+        `unstuck.course-hints.v1:${user.uid}:${courseId}`,
+        `unstuck.course-assessment-pending.v1:${user.uid}:${courseId}:`,
       ];
       for (let index = window.localStorage.length - 1; index >= 0; index--) {
         const key = window.localStorage.key(index);
@@ -416,28 +423,13 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
   };
 
   const deleteConcept = async (concept: Concept) => {
-    const { error } = await supabase.from("concepts").delete().eq("id", concept.id);
-    if (error) throw new Error("Couldn't delete this concept history. Please try again.");
+    await deleteSavedConcept({ data: { conceptId: concept.id } });
     setConcepts((current) => current.filter((item) => item.id !== concept.id));
   };
 
   const saveCourseProgress = async (courseId: string, patch: CourseProgressPatch) => {
-    const previous = courseProgress[courseId];
-    const next = {
-      user_id: user.id,
-      course_id: courseId,
-      current_phase_id: previous?.current_phase_id ?? null,
-      current_topic_id: previous?.current_topic_id ?? null,
-      completed_topic_ids: previous?.completed_topic_ids ?? [],
-      completed_phase_ids: previous?.completed_phase_ids ?? [],
-      assessment_responses: previous?.assessment_responses ?? {},
-      ...patch,
-      updated_at: new Date().toISOString(),
-    };
-
-    const { data, error } = await supabase.from("course_progress").upsert(next, { onConflict: "user_id,course_id" }).select().single();
-    if (error || !data) throw new Error("Couldn't save your course progress. Your existing progress is unchanged.");
-    const saved = { ...data, assessment_responses: data.assessment_responses as Record<string, string> } as CourseProgress;
+    const data = await updateCoursePosition({ data: { courseId, patch } });
+    const saved = { ...data, assessment_responses: {} } as CourseProgress;
     setCourseProgress((current) => ({ ...current, [courseId]: saved }));
     return saved;
   };
@@ -445,8 +437,8 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
   const signOut = async () => {
     setSigningOut(true);
     try {
-      const { error } = await supabase.auth.signOut();
-      setAuthError(error ? "We couldn't sign you out. Please try again." : null);
+      await firebaseSignOut(getFirebaseAuth());
+      setAuthError(null);
     } catch {
       setAuthError("We couldn't sign you out. Please check your connection and try again.");
     } finally {
@@ -476,26 +468,26 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
   if (!profile) return <Shell right={right}><p className="text-muted-foreground">Loading your profile…</p></Shell>;
   if (!profile.onboarded || view.kind === "settings") return (
     <Shell right={right}>
-      <Onboarding profile={profile} editing={profile.onboarded} onDone={async (p, next) => { setProfile(p); if (next) setView({ kind: "learn", topic: next, key: Date.now() }); else setView({ kind: "home" }); }} />
+      <Onboarding profile={profile} editing={profile.onboarded} saveProfile={async (patch) => await updateProfile({ data: patch }) as Profile} onDone={async (p, next) => { setProfile(p); if (next) setView({ kind: "learn", topic: next, key: Date.now() }); else setView({ kind: "home" }); }} />
     </Shell>
   );
   if (view.kind === "learn") return (
     <Shell right={right}>
       <button onClick={() => setView({ kind: "home" })} className="mb-4 text-sm text-muted-foreground hover:text-foreground">← Back to dashboard</button>
-      <LearnSession key={view.key} storageKey={`unstuck.user-session.v1:${user.id}`} initialTopic={view.topic} prefs={prefs} onRecord={record} onExit={() => setView({ kind: "home" })} />
+      <LearnSession key={view.key} storageKey={`unstuck.user-session.v1:${user.uid}`} initialTopic={view.topic} prefs={prefs} onRecord={record} onExit={() => setView({ kind: "home" })} />
     </Shell>
   );
   return (
     <Shell right={right}>
-      <Dashboard profile={profile} concepts={concepts} courses={courses} courseProgress={courseProgress} saveCourseProgress={saveCourseProgress} assessmentAttempts={assessmentAttempts} gradeAssignment={gradeAssignment} rememberAssessmentAttempt={rememberAssessmentAttempt} ask={ask} prefs={prefs} setCourses={setCourses} userId={user.id} onForgetCourse={forgetCourse} onDeleteConcept={deleteConcept}
+      <Dashboard profile={profile} concepts={concepts} courses={courses} courseProgress={courseProgress} saveCourseProgress={saveCourseProgress} assessmentAttempts={assessmentAttempts} importedGuestActivity={importedGuestActivity} gradeAssignment={gradeAssignment} rememberAssessmentAttempt={rememberAssessmentAttempt} ask={ask} prefs={prefs} setCourses={setCourses} userId={user.uid} onForgetCourse={forgetCourse} onDeleteConcept={deleteConcept}
         learn={(topic) => setView({ kind: "learn", topic, key: Date.now() })}
-        dismiss={async (c) => { const at = new Date(Date.now() + 7 * 86400000).toISOString(); await supabase.from("concepts").update({ review_at: at }).eq("id", c.id); setConcepts((cs) => cs.map((x) => x.id === c.id ? { ...x, review_at: at } : x)); }}
+        dismiss={async (c) => { const { review_at } = await updateConceptReview({ data: { conceptId: c.id } }); setConcepts((cs) => cs.map((x) => x.id === c.id ? { ...x, review_at } : x)); }}
       />
     </Shell>
   );
 }
 
-function Onboarding({ profile, editing, onDone }: { profile: Profile; editing: boolean; onDone: (p: Profile, next?: string) => void }) {
+function Onboarding({ profile, editing, saveProfile, onDone }: { profile: Profile; editing: boolean; saveProfile: (patch: { goal?: string | null; subject?: string | null; level?: string | null; study_minutes?: number; preferred_styles?: string[]; onboarded?: boolean }) => Promise<Profile>; onDone: (p: Profile, next?: string) => void }) {
   const [goal, setGoal] = useState(profile.goal ?? "");
   const [subject, setSubject] = useState(profile.subject ?? "");
   const [level, setLevel] = useState(profile.level ?? "");
@@ -507,11 +499,15 @@ function Onboarding({ profile, editing, onDone }: { profile: Profile; editing: b
 
   const save = async (skip = false) => {
     setSaving(true); setErr(null);
-    const patch = skip ? { onboarded: true } : { goal: goal || null, subject: subject || null, level: level || null, study_minutes: minutes, preferred_styles: styles, onboarded: true, updated_at: new Date().toISOString() };
-    const { data, error } = await supabase.from("profiles").update(patch).eq("id", profile.id).select().single();
-    setSaving(false);
-    if (error || !data) { setErr("Couldn't save. Please try again."); return; }
-    onDone(data as Profile, !skip && stuck.trim() ? stuck.trim() : undefined);
+    const patch = skip ? { onboarded: true } : { goal: goal || null, subject: subject || null, level: level || null, study_minutes: minutes, preferred_styles: styles, onboarded: true };
+    try {
+      const data = await saveProfile(patch);
+      onDone(data, !skip && stuck.trim() ? stuck.trim() : undefined);
+    } catch {
+      setErr("Couldn't save. Please try again.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const input = "mt-2 w-full rounded-lg border bg-background p-3 outline-none focus:ring-2 focus:ring-ring";
@@ -563,11 +559,23 @@ function Onboarding({ profile, editing, onDone }: { profile: Profile; editing: b
 }
 
 const statusGroup = (s: string) => s.startsWith("Demonstrated") ? "done" : s === "Progressing" ? "developing" : "work";
+const zImportedGuestActivity = z.object({
+  id: z.string(),
+  saved_at: z.string(),
+  source: z.literal("unverified-guest-history"),
+  record: z.object({
+    concept: z.string(),
+    correct: z.boolean(),
+    explanation: z.string().nullable(),
+    status: z.literal("Not assessed"),
+  }),
+});
 
-function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgress, assessmentAttempts, gradeAssignment, rememberAssessmentAttempt, ask, prefs, setCourses, userId, onForgetCourse, onDeleteConcept, learn, dismiss }: {
+function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgress, assessmentAttempts, importedGuestActivity, gradeAssignment, rememberAssessmentAttempt, ask, prefs, setCourses, userId, onForgetCourse, onDeleteConcept, learn, dismiss }: {
   profile: Profile; concepts: Concept[]; courses: Course[]; courseProgress: Record<string, CourseProgress>;
   saveCourseProgress: (courseId: string, patch: CourseProgressPatch) => Promise<CourseProgress>;
   assessmentAttempts: CourseAssessmentAttempt[];
+  importedGuestActivity: ImportedGuestActivity[];
   gradeAssignment: ReturnType<typeof useServerFn<typeof evaluateCourseAssignment>>;
   rememberAssessmentAttempt: (attempt: CourseAssessmentAttempt) => void;
   ask: ReturnType<typeof useServerFn<typeof askTutor>>; prefs: Record<string, unknown> | undefined;
@@ -577,6 +585,8 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
 }) {
   const readPhoto = useServerFn(readProblem);
   const capabilities = useServerFn(getCapabilities);
+  const createSavedCourse = useServerFn(saveCourseFn);
+  const deleteSavedCourse = useServerFn(deleteCourseFn);
   const [creating, setCreating] = useState(false);
   const [reading, setReading] = useState(false);
   const [visionAvailable, setVisionAvailable] = useState(false);
@@ -661,11 +671,18 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
     }
   }, [hintStorageKey, readyHintStorageKey, usedHints]);
 
-  const markHintUsed = (phaseId: string, questionId: string) => {
-    setUsedHints((current) => ({
-      ...current,
-      [phaseId]: Array.from(new Set([...(current[phaseId] ?? []), questionId])),
-    }));
+  const markHintUsed = async (phaseId: string, questionId: string) => {
+    if ((usedHints[phaseId] ?? []).includes(questionId)) return;
+    if (!course) return;
+    try {
+      const result = await saveAssessmentHint({ data: { courseId: course.id, phaseId, questionId } });
+      setUsedHints((current) => ({
+        ...current,
+        [phaseId]: Array.from(new Set([...(current[phaseId] ?? []), ...result.questionIds])),
+      }));
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : "This hint couldn't be recorded. Please try again.");
+    }
   };
 
   const resetCourse = async () => {
@@ -679,15 +696,16 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
       setResettingCourse(false);
       return;
     }
-    const { data, error } = await supabase.from("courses").insert({
-      user_id: userId,
+    let data: Awaited<ReturnType<typeof createSavedCourse>>;
+    try {
+      data = await createSavedCourse({ data: {
       title: course.title,
       goal: course.goal,
       outcomes: course.outcomes,
       topics: course.topics,
       plan: course.plan,
-    }).select().single();
-    if (error || !data) {
+      } });
+    } catch {
       setErr("Couldn't create a fresh course copy. Your saved course and progress are unchanged.");
       setResettingCourse(false);
       return;
@@ -713,8 +731,9 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
     if (!course || deletingCourse) return;
     if (!window.confirm(`Delete "${course.title}", its saved position, and its assessment attempts? This cannot be undone. Other courses and concept history will remain.`)) return;
     setDeletingCourse(true); setErr(null);
-    const { data, error } = await supabase.from("courses").delete().eq("id", course.id).eq("user_id", userId).select("id").single();
-    if (error || !data) {
+    try {
+      await deleteSavedCourse({ data: { courseId: course.id } });
+    } catch {
       setErr("Couldn't delete this course. Its saved plan and progress are unchanged.");
       setDeletingCourse(false);
       return;
@@ -772,10 +791,16 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
     const topics = draft.phases.flatMap((phase) => phase.topics.map((topic) => ({
       id: topic.id, name: topic.name, why: topic.why, prerequisites: topic.prerequisites, minutes: topic.minutes,
     })));
-    const { data, error } = await supabase.from("courses").insert({
-      user_id: userId, title: draft.title, goal: draft.goal, outcomes: draft.outcomes, topics, plan: draft,
-    }).select().single();
-    if (error || !data) { setErr("Couldn't save the plan. The proposed plan is still available to review."); setCreating(false); return; }
+    let data: Awaited<ReturnType<typeof createSavedCourse>>;
+    try {
+      data = await createSavedCourse({ data: {
+        title: draft.title, goal: draft.goal, outcomes: draft.outcomes, topics, plan: draft,
+      } });
+    } catch {
+      setErr("Couldn't save the plan. The proposed plan is still available to review.");
+      setCreating(false);
+      return;
+    }
     const savedCourse = { ...data, plan: draft, topics } as unknown as Course;
     setCourses((current) => [savedCourse, ...current]);
     setActiveCourseId(savedCourse.id);
@@ -803,7 +828,10 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
     if (!selected.plan) return;
     const entries = selected.plan.phases.flatMap((phase) => phase.topics.map((topic) => ({ phase, topic })));
     const previous = courseProgress[selected.id];
-    const covered = previous ? [] : entries.filter(({ topic }) => hasDemonstratedCover(topic)).map(({ topic }) => topic.id);
+    const previouslyCompleted = new Set(previous?.completed_topic_ids ?? []);
+    const covered = entries
+      .filter(({ topic }) => !previouslyCompleted.has(topic.id) && hasDemonstratedCover(topic))
+      .map(({ topic }) => topic.id);
     const completed = Array.from(new Set([...(previous?.completed_topic_ids ?? []), ...covered]));
     const selectedAttempts = assessmentAttempts.filter((attempt) => attempt.course_id === selected.id);
     const usesGraded = selected.plan.phases.every((phase) => !!phase.assessment.answerToken);
@@ -817,7 +845,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
     const nextPhaseId = openPhase?.id ?? null;
     try {
       await saveCourseProgress(selected.id, {
-        completed_topic_ids: completed,
+        skipTopicIds: covered,
         current_phase_id: nextPhaseId,
         current_topic_id: next?.id ?? null,
       });
@@ -842,7 +870,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
     const next = openPhase?.topics.find((topic) => !completed.includes(topic.id));
     try {
       await saveCourseProgress(course.id, {
-        completed_topic_ids: completed,
+        completeTopicId: currentEntry.topic.id,
         current_phase_id: openPhase?.id ?? null,
         current_topic_id: next?.id ?? null,
       });
@@ -894,7 +922,6 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
         answerToken: phase.assessment.answerToken,
         objectiveAnswers: objectives,
         writtenAnswers: written,
-        hintsUsed: (usedHints[phase.id] ?? []).length,
       } });
       const parsed = assignmentResultSchema.safeParse(attempt.evaluation);
       if (!parsed.success) throw new Error("The saved assessment result could not be validated. Please reload your course.");
@@ -1144,7 +1171,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
                             return <fieldset key={question.id} className="mt-4 rounded-md border bg-background p-3">
                               <legend className="px-1 text-sm font-medium">{question.question} <span className="text-xs text-muted-foreground">({question.points} pts · {question.objective})</span></legend>
                               <div className="mt-2 space-y-2">{question.options.map((option, index) => <label key={option} className="flex gap-2 text-sm"><input type="radio" name={hintKey} checked={objectiveAnswers[hintKey] === index} onChange={() => setObjectiveAnswers((current) => ({ ...current, [hintKey]: index }))} />{option}</label>)}</div>
-                              <button type="button" onClick={() => markHintUsed(phase.id, question.id)} className="mt-2 text-xs text-accent underline">Show hint</button>
+                              <button type="button" onClick={() => void markHintUsed(phase.id, question.id)} className="mt-2 text-xs text-accent underline">Show hint</button>
                               {hintShown && <p className="mt-1 text-xs text-muted-foreground">{question.hint}</p>}
                               <LearningHelper
                                 context={JSON.stringify({ course: course.title, goal: course.goal, phase: phase.title, prerequisites, question: question.question, objective: question.objective, learnerAnswer: selectedAnswer, publicHint: question.hint, previousFeedback: latestAttempt?.evaluation.objectiveResults.find((result) => result.questionId === question.id) ?? null })}
@@ -1167,7 +1194,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
                             }) ?? [];
                             return <div key={question.id} className="mt-4 rounded-md border bg-background p-3">
                               <label className="block text-sm font-medium">{question.prompt} <span className="text-xs text-muted-foreground">({question.objective})</span><textarea maxLength={500} className="mt-2 w-full rounded-md border bg-background p-2" rows={3} value={writtenAnswers[responseKey] ?? ""} onChange={(event) => setWrittenAnswers((current) => ({ ...current, [responseKey]: event.target.value }))} /></label>
-                              <button type="button" onClick={() => markHintUsed(phase.id, question.id)} className="mt-2 text-xs text-accent underline">Show hint</button>
+                              <button type="button" onClick={() => void markHintUsed(phase.id, question.id)} className="mt-2 text-xs text-accent underline">Show hint</button>
                               {hintShown && <p className="mt-1 text-xs text-muted-foreground">{question.hint}</p>}
                               {followUpPending && latestAttempt?.evaluation.followUpQuestion && <label className="mt-3 block text-sm font-medium">{latestAttempt.evaluation.followUpQuestion}<textarea maxLength={200} className="mt-1 w-full rounded-md border bg-background p-2" rows={2} value={followUpAnswers[responseKey] ?? ""} onChange={(event) => setFollowUpAnswers((current) => ({ ...current, [responseKey]: event.target.value }))} /></label>}
                               <LearningHelper
@@ -1296,6 +1323,23 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
           </ol>
         )}
       </section>
+      {importedGuestActivity.length > 0 && (
+        <section className="card-paper p-6" aria-labelledby="guest-history-heading">
+          <h2 id="guest-history-heading" className="text-xl font-semibold">Imported guest activity</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            These answers were saved on this device before sign-in. They are kept for continuity but are unverified
+            and do not count as demonstrated knowledge or change your course progress.
+          </p>
+          <ol className="mt-3 divide-y">
+            {importedGuestActivity.slice().sort((a, b) => Date.parse(b.saved_at) - Date.parse(a.saved_at)).slice(0, 10).map((item) => (
+              <li key={item.id} className="flex flex-wrap justify-between gap-2 py-2 text-sm">
+                <span>{item.record.concept} · {item.record.correct ? "guest recorded correct" : "guest recorded incorrect"} · not assessed</span>
+                <time className="text-xs text-muted-foreground" dateTime={item.saved_at}>{new Date(item.saved_at).toLocaleDateString()}</time>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
     </div>
   );
 }

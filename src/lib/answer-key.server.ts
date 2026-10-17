@@ -5,9 +5,18 @@ type AnswerKey = {
   kind: AnswerKind | "course-assessment";
   correctIndex: number;
   explanation?: string;
+  concept?: string;
+  context?: string;
   expiresAt: number;
   nonce: string;
 };
+
+export type AnswerResult = { correct: boolean; explanation?: string; concept?: string; context?: string };
+export type AnswerReplayStore = {
+  consume(input: { token: string; choice: number; result: AnswerResult; expiresAt: number }): Promise<AnswerResult>;
+};
+export type SigningConfig = { activeKeyId: string; keys: Record<string, string> };
+type SigningInput = string | SigningConfig | undefined;
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const COURSE_TOKEN_TTL_MS = 10 * 365 * 24 * 60 * 60 * 1000;
@@ -36,34 +45,96 @@ async function encryptionKey(secret: string): Promise<CryptoKey> {
   );
 }
 
-function configuredSecret(secret: string | undefined): string {
-  if (!secret || secret.length < 32) {
+export function signingConfigFromEnvironment(env: Record<string, string | undefined>): SigningConfig {
+  const serialized = env["ANSWER_SIGNING_KEYS_JSON"];
+  const activeKeyId = env["ANSWER_SIGNING_ACTIVE_KEY_ID"];
+  if (!serialized || !activeKeyId) {
+    const legacy = env["QUESTION_SIGNING_SECRET"];
+    if (legacy && legacy.length >= 32) return { activeKeyId: "legacy", keys: { legacy } };
     throw new Error("Answer verification is not configured. Please try again later.");
   }
-  return secret;
+  let keys: unknown;
+  try {
+    keys = JSON.parse(serialized);
+  } catch {
+    throw new Error("Answer verification key configuration is invalid.");
+  }
+  if (typeof keys !== "object" || keys === null || Array.isArray(keys)) {
+    throw new Error("Answer verification key configuration is invalid.");
+  }
+  const validEntries = Object.entries(keys).filter(([keyId, value]) =>
+    /^[a-zA-Z0-9_-]{1,40}$/.test(keyId) && typeof value === "string" && value.length >= 32);
+  if (validEntries.length !== Object.keys(keys).length || !Object.hasOwn(keys, activeKeyId)) {
+    throw new Error("Answer verification key configuration is invalid.");
+  }
+  return { activeKeyId, keys: Object.fromEntries(validEntries) as Record<string, string> };
+}
+
+function configuredKeys(input: SigningInput): SigningConfig {
+  const config = typeof input === "object" && input !== null
+    ? input
+    : typeof input === "string" && input.length >= 32
+      ? { activeKeyId: "legacy", keys: { legacy: input } }
+      : undefined;
+  if (!config || !/^[a-zA-Z0-9_-]{1,40}$/.test(config.activeKeyId) ||
+    !config.keys[config.activeKeyId] || Object.values(config.keys).some((key) => key.length < 32)) {
+    throw new Error("Answer verification is not configured. Please try again later.");
+  }
+  return config;
+}
+
+function tokenParts(token: string, config: SigningConfig) {
+  const parts = token.split(".");
+  if (parts.length === 2) return { keyId: "legacy", iv: parts[0], ciphertext: parts[1] };
+  if (parts.length === 3) return { keyId: parts[0]!, iv: parts[1], ciphertext: parts[2] };
+  throw new Error("This question could not be verified. Please try again.");
+}
+
+async function decryptToken(token: string, input: SigningInput) {
+  const config = configuredKeys(input);
+  const { keyId, iv: encodedIv, ciphertext: encodedCiphertext } = tokenParts(token, config);
+  const secret = config.keys[keyId];
+  if (!secret || !encodedIv || !encodedCiphertext) throw new Error("This question could not be verified. Please try again.");
+  let iv: Uint8Array;
+  let encrypted: Uint8Array;
+  try {
+    iv = decodeBase64Url(encodedIv);
+    encrypted = decodeBase64Url(encodedCiphertext);
+  } catch {
+    throw new Error("This question could not be verified. Please try again.");
+  }
+  if (iv.length !== 12) throw new Error("This question could not be verified. Please try again.");
+  try {
+    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, await encryptionKey(secret), encrypted);
+    return { keyId, parsed: JSON.parse(new TextDecoder().decode(plaintext)) as AnswerKey & { payload?: unknown } };
+  } catch {
+    throw new Error("This question could not be verified. Please try again.");
+  }
 }
 
 export async function issueAnswerKey(
   key: Omit<AnswerKey, "expiresAt" | "nonce">,
-  secret: string | undefined,
+  secret: SigningInput,
   now = Date.now(),
 ): Promise<string> {
+  const config = configuredKeys(secret);
   const nonce = encodeBase64Url(crypto.getRandomValues(new Uint8Array(16)));
   const plaintext = new TextEncoder().encode(JSON.stringify({ ...key, expiresAt: now + TOKEN_TTL_MS, nonce }));
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encrypted = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv },
-    await encryptionKey(configuredSecret(secret)),
+    await encryptionKey(config.keys[config.activeKeyId]!),
     plaintext,
   );
-  return `${encodeBase64Url(iv)}.${encodeBase64Url(new Uint8Array(encrypted))}`;
+  return `${config.activeKeyId}.${encodeBase64Url(iv)}.${encodeBase64Url(new Uint8Array(encrypted))}`;
 }
 
 export async function sealCourseAssessment(
   payload: Record<string, unknown>,
-  secret: string | undefined,
+  secret: SigningInput,
   now = Date.now(),
 ): Promise<string> {
+  const config = configuredKeys(secret);
   const nonce = encodeBase64Url(crypto.getRandomValues(new Uint8Array(16)));
   const plaintext = new TextEncoder().encode(JSON.stringify({
     kind: "course-assessment",
@@ -74,37 +145,20 @@ export async function sealCourseAssessment(
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encrypted = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv },
-    await encryptionKey(configuredSecret(secret)),
+    await encryptionKey(config.keys[config.activeKeyId]!),
     plaintext,
   );
-  return `${encodeBase64Url(iv)}.${encodeBase64Url(new Uint8Array(encrypted))}`;
+  return `${config.activeKeyId}.${encodeBase64Url(iv)}.${encodeBase64Url(new Uint8Array(encrypted))}`;
 }
 
 export async function openCourseAssessment(
   token: string,
-  secret: string | undefined,
+  secret: SigningInput,
   now = Date.now(),
 ): Promise<Record<string, unknown>> {
-  const key = configuredSecret(secret);
-  const [suppliedIv, ciphertext, extra] = token.split(".");
-  if (!suppliedIv || !ciphertext || extra !== undefined) throw new Error("This assignment has expired. Please generate it again.");
-  let iv: Uint8Array;
-  let encrypted: Uint8Array;
+  configuredKeys(secret);
+  const { parsed } = await decryptToken(token, secret) as { parsed: AnswerKey & { payload?: unknown } };
   try {
-    iv = decodeBase64Url(suppliedIv);
-    encrypted = decodeBase64Url(ciphertext);
-  } catch {
-    throw new Error("This assignment could not be verified. Please try again.");
-  }
-  if (iv.length !== 12) throw new Error("This assignment could not be verified. Please try again.");
-  try {
-    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, await encryptionKey(key), encrypted);
-    const parsed = JSON.parse(new TextDecoder().decode(plaintext)) as {
-      kind?: unknown;
-      payload?: unknown;
-      expiresAt?: unknown;
-      nonce?: unknown;
-    };
     if (parsed.kind !== "course-assessment" || typeof parsed.expiresAt !== "number" || parsed.expiresAt < now ||
       typeof parsed.nonce !== "string" || parsed.payload === null || typeof parsed.payload !== "object") {
       throw new Error("This assignment has expired. Please generate it again.");
@@ -119,7 +173,8 @@ export async function openCourseAssessment(
 export async function protectTutorQuestion(
   json: string,
   kind: AnswerKind,
-  secret: string | undefined,
+  secret: SigningInput,
+  concept?: string,
 ): Promise<string> {
   const question = JSON.parse(json) as TutorQuestion;
   const answerToken = await issueAnswerKey(
@@ -127,6 +182,8 @@ export async function protectTutorQuestion(
       kind,
       correctIndex: question.correctIndex,
       ...(typeof question.explanation === "string" ? { explanation: question.explanation } : {}),
+      ...(concept ? { concept } : {}),
+      ...(typeof question.context === "string" ? { context: question.context } : {}),
     },
     secret,
   );
@@ -145,35 +202,11 @@ export async function checkAnswerKey(
   token: string,
   kind: AnswerKind,
   choice: number,
-  secret: string | undefined,
+  secret: SigningInput,
   now = Date.now(),
-): Promise<{ correct: boolean; explanation?: string }> {
-  const key = configuredSecret(secret);
-  const [suppliedIv, ciphertext, extra] = token.split(".");
-  if (!suppliedIv || !ciphertext || extra !== undefined) throw new Error("This question has expired. Please try again.");
-  let iv: Uint8Array;
-  let encrypted: Uint8Array;
-  try {
-    iv = decodeBase64Url(suppliedIv);
-    encrypted = decodeBase64Url(ciphertext);
-  } catch {
-    throw new Error("This question could not be verified. Please try again.");
-  }
-  if (iv.length !== 12) {
-    throw new Error("This question could not be verified. Please try again.");
-  }
-
-  let parsed: AnswerKey;
-  try {
-    const plaintext = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv },
-      await encryptionKey(key),
-      encrypted,
-    );
-    parsed = JSON.parse(new TextDecoder().decode(plaintext)) as AnswerKey;
-  } catch {
-    throw new Error("This question could not be verified. Please try again.");
-  }
+  replayStore?: AnswerReplayStore,
+): Promise<AnswerResult> {
+  const { parsed } = await decryptToken(token, secret);
   if (
     parsed.kind !== kind ||
     !Number.isInteger(parsed.correctIndex) ||
@@ -192,7 +225,21 @@ export async function checkAnswerKey(
     return prior.result;
   }
 
-  const result = { correct: choice === parsed.correctIndex, ...(parsed.explanation ? { explanation: parsed.explanation } : {}) };
+  const result = {
+    correct: choice === parsed.correctIndex,
+    ...(parsed.explanation ? { explanation: parsed.explanation } : {}),
+    ...(parsed.concept ? { concept: parsed.concept } : {}),
+    ...(parsed.context ? { context: parsed.context } : {}),
+  };
+  if (replayStore) {
+    const stored = await replayStore.consume({ token, choice, result, expiresAt: parsed.expiresAt });
+    return {
+      correct: stored.correct,
+      ...(stored.explanation ? { explanation: stored.explanation } : {}),
+      ...(stored.concept ? { concept: stored.concept } : {}),
+      ...(stored.context ? { context: stored.context } : {}),
+    };
+  }
   submissions.set(token, { choice, result, expiresAt: parsed.expiresAt });
   if (submissions.size > 5000) {
     for (const [usedToken, submission] of submissions) if (submission.expiresAt < now) submissions.delete(usedToken);

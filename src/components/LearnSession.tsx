@@ -1,11 +1,13 @@
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState } from "react";
+import { getFirebaseAuth, isFirebaseConfigured } from "@/integrations/firebase/client";
 import { LessonTools, type Caps } from "@/components/LessonTools";
 import { LearningHelper } from "@/components/LearningHelper";
 import { getCapabilities, readProblem } from "@/lib/google.functions";
 import { shrinkImage } from "@/lib/image";
 import { clearSession, readSession, shouldRestoreSession, writeSession } from "@/lib/session-storage";
 import { askTutor, checkTutorAnswer } from "@/lib/tutor.functions";
+import { recordLearningHint } from "@/lib/workspace.functions";
 
 type Option = { text: string };
 type Diag = { concept: string; question: string; options: Option[]; answerToken: string; why: string };
@@ -43,6 +45,7 @@ const STAGES: { id: Stage; label: string }[] = [
 export function LearnSession({ initialTopic, prefs, onRecord, onExit, storageKey }: { initialTopic?: string; prefs?: Record<string, unknown>; onRecord?: (r: SessionRecord) => void; onExit?: () => void; storageKey?: string }) {
   const ask = useServerFn(askTutor);
   const checkAnswer = useServerFn(checkTutorAnswer);
+  const saveHintUse = useServerFn(recordLearningHint);
   const readPhoto = useServerFn(readProblem);
   const loadCaps = useServerFn(getCapabilities);
   const [caps, setCaps] = useState<Caps>({ vision: false, speech: false, translate: false, video: false });
@@ -373,7 +376,12 @@ export function LearnSession({ initialTopic, prefs, onRecord, onExit, storageKey
             currentMethod={lesson?.style}
             assessmentActive={assessmentActive}
             storageKey={`unstuck.helper.v1:${storageKey ?? "guest-session"}`}
-            onHintUsed={() => setStyles((current) => current.includes("hint") ? current : [...current, "hint"])}
+            onHintUsed={async () => {
+              if (isFirebaseConfigured() && getFirebaseAuth().currentUser && diag?.concept) {
+                await saveHintUse({ data: { concept: diag.concept } });
+              }
+              setStyles((current) => current.includes("hint") ? current : [...current, "hint"]);
+            }}
           />
         </section>
   );

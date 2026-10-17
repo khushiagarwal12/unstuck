@@ -132,7 +132,7 @@ export function LearningHelper({
   currentMethod?: string;
   assessmentActive?: boolean;
   storageKey: string;
-  onHintUsed?: () => void;
+  onHintUsed?: () => void | Promise<void>;
 }) {
   const ask = useServerFn(askTutor);
   const [open, setOpen] = useState(false);
@@ -197,7 +197,7 @@ export function LearningHelper({
             : reply.representation.kind === "bar-chart" ? reply.representation.textAlternative
               : reply.representation.textAlternative;
       const summary = [reply.title, reply.explanation, reply.teachingMethod ?? "", representationSummary].filter(Boolean).join(". ").slice(0, 1800);
-      if (mode === "hint") onHintUsed?.();
+      if (mode === "hint") await onHintUsed?.();
       setMessages((current) => [...current, { role: "helper", mode: reply.mode, text: summary, reply }].slice(-12));
     } catch (e) {
       setError(e instanceof Error ? e.message : "The helper couldn't answer. Please try again.");

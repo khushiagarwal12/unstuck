@@ -1,8 +1,8 @@
-import { sealCourseAssessment } from "./answer-key.server";
+import { sealCourseAssessment, type SigningConfig } from "./answer-key.server";
 import { assignmentPayloadSchema } from "./course-assessment";
 import { courseSchema, publicCourseSchema } from "./tutor-schemas";
 
-export async function protectCoursePlan(json: string, secret: string | undefined): Promise<string> {
+export async function protectCoursePlan(json: string, secret: string | SigningConfig | undefined): Promise<string> {
   const parsed = courseSchema.parse(JSON.parse(json));
   const phases = await Promise.all(parsed.phases.map(async (phase) => {
     const payload = assignmentPayloadSchema.parse({

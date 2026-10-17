@@ -1,47 +1,31 @@
-import { generateKeyPairSync, verify } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { pickProvider, supportsVision, vertexGenerate, geminiGenerate } from "@/lib/ai-provider.server";
+import { pickProvider, supportsVision, vertexGenerate } from "@/lib/ai-provider.server";
 import { findVideo, synthesizeSpeech, translateTexts, videoAvailable } from "@/lib/google-apis.server";
-import { accessToken, clearTokenCache, signJwt } from "@/lib/google-auth.server";
+import { accessToken, clearTokenCache } from "@/lib/google-auth.server";
 
 afterEach(() => { vi.unstubAllGlobals(); clearTokenCache(); });
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 const REQ = { system: "s", prompt: "p", tier: "main", temperature: 0 } as const;
 
-function serviceAccount() {
-  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-  return { pem, publicKey, sa: { client_email: "svc@proj.iam.gserviceaccount.com", private_key: pem } };
-}
-
-describe("service account auth", () => {
-  it("signs a valid RS256 JWT with the right claims", async () => {
-    const { publicKey, sa } = serviceAccount();
-    const jwt = await signJwt(sa, 1_000);
-    const [h, c, sig] = jwt.split(".") as [string, string, string];
-    expect(JSON.parse(Buffer.from(h, "base64url").toString())).toEqual({ alg: "RS256", typ: "JWT" });
-    const claims = JSON.parse(Buffer.from(c, "base64url").toString());
-    expect(claims).toMatchObject({ iss: sa.client_email, aud: "https://oauth2.googleapis.com/token", iat: 1000, exp: 4600 });
-    expect(claims.scope).toContain("cloud-platform");
-    expect(verify("RSA-SHA256", Buffer.from(`${h}.${c}`), publicKey, Buffer.from(sig, "base64url"))).toBe(true);
-  });
-
-  it("exchanges the JWT for a token once and caches it", async () => {
-    const { sa } = serviceAccount();
-    const f = vi.fn().mockResolvedValue(json({ access_token: "tok", expires_in: 3600 }));
-    vi.stubGlobal("fetch", f);
-    const env = { GOOGLE_SERVICE_ACCOUNT_JSON: JSON.stringify(sa) };
-    expect(await accessToken(env, () => 0)).toBe("tok");
-    expect(await accessToken(env, () => 1000)).toBe("tok");
-    expect(f).toHaveBeenCalledTimes(1);
-    expect(String(f.mock.calls[0]![1].body)).toContain("jwt-bearer");
+describe("Google Application Default Credentials", () => {
+  it("gets an ADC token once and reuses the cached token", async () => {
+    const getAccessToken = vi.fn().mockResolvedValue("tok");
+    const createAuth = vi.fn(() => ({ getAccessToken }));
+    const env = { GOOGLE_CLOUD_PROJECT: "project-id" };
+    expect(await accessToken(env, () => 0, createAuth)).toBe("tok");
+    expect(await accessToken(env, () => 1000, createAuth)).toBe("tok");
+    expect(createAuth).toHaveBeenCalledTimes(1);
+    expect(createAuth).toHaveBeenCalledWith("project-id");
   });
 
   it("prefers an explicit access token, and fails clearly with no credentials", async () => {
     expect(await accessToken({ GOOGLE_ACCESS_TOKEN: "dev" })).toBe("dev");
-    await expect(accessToken({})).rejects.toThrow(/not configured/);
+    await expect(accessToken({ GOOGLE_ACCESS_TOKEN: "dev", K_SERVICE: "unstuck" }))
+      .rejects.toThrow(/not allowed in deployed services/);
+    await expect(accessToken({}, Date.now, () => ({ getAccessToken: async () => null })))
+      .rejects.toThrow(/Application Default Credentials are unavailable/);
   });
 });
 
@@ -63,14 +47,10 @@ describe("Vertex AI provider", () => {
     await expect(gen(REQ)).rejects.toThrow(/credentials/);
   });
 
-  it("is chosen by LLM_BACKEND=vertex, and Gemini sends images as inline data", async () => {
-    expect(typeof pickProvider({ LLM_BACKEND: "vertex", GOOGLE_CLOUD_PROJECT: "p" })).toBe("function");
-    expect(supportsVision({ LLM_BACKEND: "vertex" })).toBe(true);
-    expect(supportsVision({ LOVABLE_API_KEY: "x" })).toBe(false);
-    const f = vi.fn().mockResolvedValue(json({ candidates: [{ content: { parts: [{ text: "{}" }] } }] }));
-    vi.stubGlobal("fetch", f);
-    await geminiGenerate("K", {})({ ...REQ, image: { mimeType: "image/jpeg", data: "QUJD" } });
-    expect(JSON.parse(f.mock.calls[0]![1].body).contents[0].parts).toHaveLength(2);
+  it("always selects Vertex AI and exposes vision only when a project is configured", () => {
+    expect(typeof pickProvider({ GOOGLE_CLOUD_PROJECT: "p" })).toBe("function");
+    expect(supportsVision({ GOOGLE_CLOUD_PROJECT: "p" })).toBe(true);
+    expect(supportsVision({})).toBe(false);
   });
 });
 

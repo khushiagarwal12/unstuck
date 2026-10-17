@@ -1,5 +1,5 @@
 /** Google Cloud APIs beyond Gemini: Text-to-Speech, Translation and the YouTube Data API. */
-import { accessToken, type Env, readServiceAccount } from "./google-auth.server";
+import { accessToken, type Env } from "./google-auth.server";
 
 const TIMEOUT_MS = 20_000;
 
@@ -17,7 +17,8 @@ async function headers(env: Env): Promise<Record<string, string>> {
   return { Authorization: `Bearer ${await accessToken(env)}`, "Content-Type": "application/json" };
 }
 
-export const speechAvailable = (env: Env) => !!(env["GOOGLE_API_KEY"] || env["GOOGLE_ACCESS_TOKEN"] || readServiceAccount(env));
+const hasCloudProject = (env: Env) => !!(env["GOOGLE_CLOUD_PROJECT"] || env["FIREBASE_PROJECT_ID"]);
+export const speechAvailable = (env: Env) => !!(env["GOOGLE_API_KEY"] || env["GOOGLE_ACCESS_TOKEN"] || hasCloudProject(env));
 export const translateAvailable = speechAvailable;
 export const videoAvailable = (env: Env) => !!env["GOOGLE_API_KEY"];
 

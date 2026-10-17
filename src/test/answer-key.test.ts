@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { checkAnswerKey, issueAnswerKey, openCourseAssessment, protectTutorQuestion, sealCourseAssessment } from "@/lib/answer-key.server";
+import { checkAnswerKey, issueAnswerKey, openCourseAssessment, protectTutorQuestion, sealCourseAssessment, signingConfigFromEnvironment } from "@/lib/answer-key.server";
 
 const secret = "this-is-a-test-signing-secret-long-enough";
 
@@ -55,14 +55,15 @@ describe("server-held answer keys", () => {
     const payload = { phaseId: "phase-one", correctIndex: 2, referenceCriteria: "Explain the invariant." };
     const token = await sealCourseAssessment(payload, secret, 1000);
     expect(token).not.toContain("correctIndex");
-    expect(await openCourseAssessment(token, secret, 1000 + 365 * 24 * 60 * 60 * 1000)).toEqual(payload);
+    expect(await openCourseAssessment(token, secret, 1000 + 10 * 365 * 24 * 60 * 60 * 1000)).toEqual(payload);
     await expect(openCourseAssessment(token, "a-different-signing-secret-that-is-long-enough", 1001)).rejects.toThrow(/verified/);
   });
 
   it("rejects tampered, wrong-kind, expired, and unconfigured keys", async () => {
     const token = await issueAnswerKey({ kind: "diagnostic", correctIndex: 2 }, secret, 1000);
-    const [payload, signature] = token.split(".");
-    const tampered = `${payload![0] === "A" ? "B" : "A"}${payload!.slice(1)}.${signature}`;
+    const [keyId, iv, ciphertext] = token.split(".");
+    const changedCiphertext = `${ciphertext![0] === "A" ? "B" : "A"}${ciphertext!.slice(1)}`;
+    const tampered = `${keyId}.${iv}.${changedCiphertext}`;
     await expect(checkAnswerKey(tampered, "diagnostic", 2, secret, 1001)).rejects.toThrow(/verified/);
     await expect(checkAnswerKey(token, "transfer", 2, secret, 1001)).rejects.toThrow(/expired/);
     await expect(checkAnswerKey(token, "diagnostic", 2, secret, 1000 + 24 * 60 * 60 * 1000 + 1)).rejects.toThrow(/expired/);
@@ -74,5 +75,30 @@ describe("server-held answer keys", () => {
     expect(await checkAnswerKey(token, "diagnostic", 0, secret)).toEqual({ correct: false });
     expect(await checkAnswerKey(token, "diagnostic", 0, secret)).toEqual({ correct: false });
     await expect(checkAnswerKey(token, "diagnostic", 1, secret)).rejects.toThrow(/already been answered/);
+  });
+
+  it("decrypts outstanding tokens with retained keys after active-key rotation", async () => {
+    const oldKey = "previous-key-material-at-least-32-characters";
+    const newKey = "current-key-material-at-least-32-characters";
+    const oldConfig = { activeKeyId: "old", keys: { old: oldKey } };
+    const rotatedConfig = { activeKeyId: "new", keys: { new: newKey, old: oldKey } };
+    const token = await issueAnswerKey({ kind: "diagnostic", correctIndex: 3 }, oldConfig, 1000);
+    const result = await checkAnswerKey(token, "diagnostic", 3, rotatedConfig, 1001);
+    expect(result.correct).toBe(true);
+  });
+
+  it("loads a valid active key ring and fails closed on invalid configuration", () => {
+    expect(signingConfigFromEnvironment({
+      ANSWER_SIGNING_ACTIVE_KEY_ID: "active",
+      ANSWER_SIGNING_KEYS_JSON: JSON.stringify({ active: secret }),
+    })).toEqual({ activeKeyId: "active", keys: { active: secret } });
+    expect(() => signingConfigFromEnvironment({
+      ANSWER_SIGNING_ACTIVE_KEY_ID: "missing",
+      ANSWER_SIGNING_KEYS_JSON: JSON.stringify({ active: secret }),
+    })).toThrow(/invalid/);
+    expect(() => signingConfigFromEnvironment({
+      ANSWER_SIGNING_ACTIVE_KEY_ID: "active",
+      ANSWER_SIGNING_KEYS_JSON: "{",
+    })).toThrow(/invalid/);
   });
 });
