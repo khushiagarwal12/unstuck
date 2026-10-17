@@ -4,9 +4,16 @@ import type { SessionRecord } from "@/components/LearnSession";
 
 const recordSchema = z.object({
   concept: z.string().trim().min(1).max(200),
-  status: z.enum(["Not assessed", "Needs more practice", "Progressing", "Demonstrated under current criteria"]),
+  status: z.enum([
+    "Not assessed",
+    "Needs more practice",
+    "Progressing",
+    "Demonstrated under current criteria",
+  ]),
   misconceptions: z.array(z.string().max(400)).max(10),
-  styles: z.array(z.enum(["visual", "example", "hint", "simpler", "analogy", "prerequisite"])).max(20),
+  styles: z
+    .array(z.enum(["visual", "example", "hint", "simpler", "analogy", "prerequisite"]))
+    .max(20),
   hintsUsed: z.number().int().min(0).max(100),
   correct: z.boolean(),
   clean: z.boolean(),
@@ -29,7 +36,8 @@ export type GuestProgressBundle = z.infer<typeof bundleSchema>;
 export const GUEST_PROGRESS_KEY = "unstuck.guest-progress.v1";
 
 function createId(): string {
-  if (typeof globalThis.crypto?.randomUUID !== "function") throw new Error("This browser can't securely save guest progress.");
+  if (typeof globalThis.crypto?.randomUUID !== "function")
+    throw new Error("This browser can't securely save guest progress.");
   return globalThis.crypto.randomUUID();
 }
 
@@ -70,10 +78,13 @@ export function clearGuestProgress(
   if (remaining.length === 0) {
     storage.removeItem(GUEST_PROGRESS_KEY);
   } else {
-    storage.setItem(GUEST_PROGRESS_KEY, JSON.stringify({
-      version: 1,
-      conversionId: nextConversionId ?? createId(),
-      events: remaining,
-    }));
+    storage.setItem(
+      GUEST_PROGRESS_KEY,
+      JSON.stringify({
+        version: 1,
+        conversionId: nextConversionId ?? createId(),
+        events: remaining,
+      }),
+    );
   }
 }

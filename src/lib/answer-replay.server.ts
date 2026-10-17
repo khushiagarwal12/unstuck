@@ -12,7 +12,9 @@ export const firestoreAnswerReplayStore: AnswerReplayStore = {
       if (snapshot.exists) {
         const saved = snapshot.data();
         if (saved?.["choice"] !== choice) {
-          throw new Error("This question has already been answered. Please continue to the next step.");
+          throw new Error(
+            "This question has already been answered. Please continue to the next step.",
+          );
         }
         return saved?.["result"] as AnswerResult;
       }

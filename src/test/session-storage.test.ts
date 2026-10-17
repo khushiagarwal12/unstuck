@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { adoptGuestSession, clearSession, readSession, shouldRestoreSession, writeSession, type SessionSnapshot } from "@/lib/session-storage";
+import {
+  adoptGuestSession,
+  clearSession,
+  readSession,
+  shouldRestoreSession,
+  writeSession,
+  type SessionSnapshot,
+} from "@/lib/session-storage";
 
 const snapshot: SessionSnapshot = {
   stage: "diagnosis",
@@ -9,12 +16,7 @@ const snapshot: SessionSnapshot = {
   diag: {
     concept: "Fractions",
     question: "Which fraction is larger?",
-    options: [
-      { text: "1/8" },
-      { text: "1/3" },
-      { text: "Equal" },
-      { text: "Cannot tell" },
-    ],
+    options: [{ text: "1/8" }, { text: "1/3" }, { text: "Equal" }, { text: "Cannot tell" }],
     answerToken: "signed-answer-key",
     why: "Checks fraction size.",
   },
@@ -22,10 +24,16 @@ const snapshot: SessionSnapshot = {
   diagnosticCorrect: false,
   diagnosis: {
     demonstrated: [],
-    hypotheses: [{ label: "denominator", summary: "You may be comparing denominators.", confidence: "low" }],
+    hypotheses: [
+      { label: "denominator", summary: "You may be comparing denominators.", confidence: "low" },
+    ],
     unresolved: ["Whether the learner is comparing denominator size."],
     needsFollowUp: true,
-    followUp: { question: "Can you picture each fraction?", options: ["A", "B"], why: "Separates the ideas." },
+    followUp: {
+      question: "Can you picture each fraction?",
+      options: ["A", "B"],
+      why: "Separates the ideas.",
+    },
     recommendedStyle: "visual",
   },
   followUps: [],

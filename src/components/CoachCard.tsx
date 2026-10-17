@@ -72,18 +72,29 @@ export function CoachCard({ userId, firstName, prefs, concepts, dueCount, daysAw
   useEffect(() => {
     if (!hasConcepts) return;
     const cached = read(cacheKey);
-    if (cached) { setNote(cached); setFailed(false); return; }
+    if (cached) {
+      setNote(cached);
+      setFailed(false);
+      return;
+    }
     let live = true;
     setFailed(false);
-    askRef.current({ data: { action: "coach", payload: JSON.parse(snapshotJson) as Record<string, unknown> } })
+    askRef
+      .current({
+        data: { action: "coach", payload: JSON.parse(snapshotJson) as Record<string, unknown> },
+      })
       .then(({ json }) => {
         if (!live) return;
         const n = JSON.parse(json) as Note;
         write(cacheKey, n);
         setNote(n);
       })
-      .catch(() => { if (live) setFailed(true); });
-    return () => { live = false; };
+      .catch(() => {
+        if (live) setFailed(true);
+      });
+    return () => {
+      live = false;
+    };
   }, [cacheKey, hasConcepts, snapshotJson]);
 
   if (concepts.length === 0 || failed) return null;
@@ -94,7 +105,9 @@ export function CoachCard({ userId, firstName, prefs, concepts, dueCount, daysAw
         <div className="mt-2 space-y-2">
           <p className="text-lg font-medium">{note.greeting}</p>
           <p>{note.focus}</p>
-          <p className="text-sm text-muted-foreground"><strong className="text-foreground">Tip:</strong> {note.tip}</p>
+          <p className="text-sm text-muted-foreground">
+            <strong className="text-foreground">Tip:</strong> {note.tip}
+          </p>
         </div>
       ) : (
         <div className="mt-3 space-y-2" aria-busy="true">

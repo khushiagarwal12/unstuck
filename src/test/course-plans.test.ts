@@ -14,28 +14,59 @@ describe("personalized course plans", () => {
   it("uses different diagnostic evidence to produce different validated journeys", async () => {
     const learnerA = {
       wantsToLearn: "Solve linear equations",
-      diagnosticResults: [{ concept: "inverse operations", status: "Needs more practice", attempts: 2, cleanSuccesses: 0, misconceptions: ["changes only one side"] }],
+      diagnosticResults: [
+        {
+          concept: "inverse operations",
+          status: "Needs more practice",
+          attempts: 2,
+          cleanSuccesses: 0,
+          misconceptions: ["changes only one side"],
+        },
+      ],
       prerequisiteGaps: ["inverse operations"],
       alreadyDemonstrated: [],
     };
     const learnerB = {
       wantsToLearn: "Solve linear equations",
-      diagnosticResults: [{ concept: "inverse operations", status: "Demonstrated under current criteria", attempts: 3, cleanSuccesses: 2, misconceptions: [] }],
+      diagnosticResults: [
+        {
+          concept: "inverse operations",
+          status: "Demonstrated under current criteria",
+          attempts: 3,
+          cleanSuccesses: 2,
+          misconceptions: [],
+        },
+      ],
       prerequisiteGaps: [],
       alreadyDemonstrated: ["inverse operations"],
     };
-    const planA = coursePlan(["Inverse operations", "Balance equations", "Variables on both sides", "Linear applications"]);
-    const planB = coursePlan(["Variables on both sides", "Equation transformations", "Modeling constraints", "Linear applications"]);
+    const planA = coursePlan([
+      "Inverse operations",
+      "Balance equations",
+      "Variables on both sides",
+      "Linear applications",
+    ]);
+    const planB = coursePlan([
+      "Variables on both sides",
+      "Equation transformations",
+      "Modeling constraints",
+      "Linear applications",
+    ]);
     const prompts: string[] = [];
-    const scripted = (plan: ReturnType<typeof coursePlan>): Generate => async ({ prompt }) => {
-      prompts.push(prompt);
-      if (prompt.includes("Solve this multiple-choice question yourself")) return JSON.stringify({ choice: 1 });
-      return JSON.stringify(plan);
-    };
+    const scripted =
+      (plan: ReturnType<typeof coursePlan>): Generate =>
+      async ({ prompt }) => {
+        prompts.push(prompt);
+        if (prompt.includes("Solve this multiple-choice question yourself"))
+          return JSON.stringify({ choice: 1 });
+        return JSON.stringify(plan);
+      };
     const resultA = JSON.parse(await runTutor(scripted(planA), "course", learnerA));
     const resultB = JSON.parse(await runTutor(scripted(planB), "course", learnerB));
     // Answer-verification solves are interleaved with the two course requests; compare only the latter.
-    const coursePrompts = prompts.filter((prompt) => !prompt.includes("Solve this multiple-choice question yourself"));
+    const coursePrompts = prompts.filter(
+      (prompt) => !prompt.includes("Solve this multiple-choice question yourself"),
+    );
     expect(coursePrompts[0]).toContain("Needs more practice");
     expect(coursePrompts[1]).toContain("Demonstrated under current criteria");
     expect(courseSchema.parse(resultA).phases[0]?.topics[0]?.name).toBe("Inverse operations");
@@ -87,7 +118,9 @@ describe("personalized course plans", () => {
     expect(privateAssignment).toMatchObject({
       phaseId: "foundations",
       objectiveQuestions: [{ correctIndex: 1 }],
-      openQuestions: [{ referenceCriteria: "The answer should preserve equality.", rubric: [{ points: 2 }] }],
+      openQuestions: [
+        { referenceCriteria: "The answer should preserve equality.", rubric: [{ points: 2 }] },
+      ],
     });
   });
 });

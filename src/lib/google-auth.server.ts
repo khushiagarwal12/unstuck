@@ -14,7 +14,8 @@ export async function accessToken(
 ): Promise<string> {
   const localToken = env["GOOGLE_ACCESS_TOKEN"];
   if (localToken) {
-    if (env["K_SERVICE"]) throw new Error("Static Google access tokens are not allowed in deployed services.");
+    if (env["K_SERVICE"])
+      throw new Error("Static Google access tokens are not allowed in deployed services.");
     return localToken;
   }
   const projectId = env["GOOGLE_CLOUD_PROJECT"] || env["FIREBASE_PROJECT_ID"];

@@ -9,7 +9,8 @@ export class FirebaseAuthenticationError extends Error {
 export async function optionalFirebaseUserId(): Promise<string | null> {
   const authorization = getRequest()?.headers.get("authorization");
   if (!authorization) return null;
-  if (!authorization.startsWith("Bearer ")) throw new FirebaseAuthenticationError("Unauthorized: Firebase sign-in is required.");
+  if (!authorization.startsWith("Bearer "))
+    throw new FirebaseAuthenticationError("Unauthorized: Firebase sign-in is required.");
   const token = authorization.slice("Bearer ".length).trim();
   if (!token) throw new FirebaseAuthenticationError("Unauthorized: Firebase sign-in is required.");
   return verifyFirebaseIdToken(token, (value) => firebaseAdminAuth().verifyIdToken(value, true));

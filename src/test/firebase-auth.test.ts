@@ -10,9 +10,13 @@ describe("Firebase ID token verification", () => {
   });
 
   it("rejects invalid, expired, revoked, or malformed identity claims", async () => {
-    await expect(verifyFirebaseIdToken("expired", async () => { throw new Error("expired"); }))
-      .rejects.toThrow(/invalid or expired/);
-    await expect(verifyFirebaseIdToken("missing-uid", async () => ({ uid: "" })))
-      .rejects.toThrow(/invalid or expired/);
+    await expect(
+      verifyFirebaseIdToken("expired", async () => {
+        throw new Error("expired");
+      }),
+    ).rejects.toThrow(/invalid or expired/);
+    await expect(verifyFirebaseIdToken("missing-uid", async () => ({ uid: "" }))).rejects.toThrow(
+      /invalid or expired/,
+    );
   });
 });

@@ -15,11 +15,19 @@ const toBase64Url = (bytes: Uint8Array) => {
 
 const fromBase64Url = (value: string) => {
   const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
-  return Uint8Array.from(atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4)), (c) => c.charCodeAt(0));
+  return Uint8Array.from(atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4)), (c) =>
+    c.charCodeAt(0),
+  );
 };
 
 const hmacKey = (secret: string, usage: "sign" | "verify") =>
-  crypto.subtle.importKey("raw", encoder.encode(`course-plan:${secret}`), { name: "HMAC", hash: "SHA-256" }, false, [usage]);
+  crypto.subtle.importKey(
+    "raw",
+    encoder.encode(`course-plan:${secret}`),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    [usage],
+  );
 
 /** Schema-parsed JSON has a stable key order, so the signer and the verifier see identical bytes. */
 export const canonicalPlan = (plan: unknown) => JSON.stringify(publicCourseSchema.parse(plan));
@@ -27,11 +35,19 @@ export const canonicalPlan = (plan: unknown) => JSON.stringify(publicCourseSchem
 export async function signCoursePlan(plan: unknown, config: SigningConfig): Promise<string> {
   const secret = config.keys[config.activeKeyId];
   if (!secret) throw new Error("Answer verification is not configured. Please try again later.");
-  const mac = await crypto.subtle.sign("HMAC", await hmacKey(secret, "sign"), encoder.encode(canonicalPlan(plan)));
+  const mac = await crypto.subtle.sign(
+    "HMAC",
+    await hmacKey(secret, "sign"),
+    encoder.encode(canonicalPlan(plan)),
+  );
   return `${config.activeKeyId}.${toBase64Url(new Uint8Array(mac))}`;
 }
 
-export async function verifyCoursePlan(plan: unknown, signature: string, config: SigningConfig): Promise<boolean> {
+export async function verifyCoursePlan(
+  plan: unknown,
+  signature: string,
+  config: SigningConfig,
+): Promise<boolean> {
   const [keyId, mac, extra] = signature.split(".");
   const secret = keyId ? config.keys[keyId] : undefined;
   if (!secret || !mac || extra !== undefined) return false;

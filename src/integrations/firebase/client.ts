@@ -15,7 +15,9 @@ function firebaseConfig() {
     projectId: import.meta.env["VITE_FIREBASE_PROJECT_ID"],
     appId: import.meta.env["VITE_FIREBASE_APP_ID"],
   };
-  const missing = Object.entries(config).filter(([, value]) => !value).map(([name]) => name);
+  const missing = Object.entries(config)
+    .filter(([, value]) => !value)
+    .map(([name]) => name);
   if (missing.length) throw new Error(`Firebase is not configured. Missing ${missing.join(", ")}.`);
   return config;
 }
@@ -30,7 +32,8 @@ export function isFirebaseConfigured(): boolean {
 }
 
 export function getFirebaseAuth() {
-  if (typeof window === "undefined") throw new Error("Firebase Authentication is only available in the browser.");
+  if (typeof window === "undefined")
+    throw new Error("Firebase Authentication is only available in the browser.");
   const app = getApps().length ? getApp() : initializeApp(firebaseConfig());
   return getAuth(app);
 }

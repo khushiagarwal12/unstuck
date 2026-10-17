@@ -7,7 +7,13 @@ import { publicCourseSchema } from "@/lib/tutor-schemas";
 
 import { coursePlan } from "./course-fixtures";
 
-const config = { activeKeyId: "current", keys: { current: "plan-signature-test-secret-long-enough-1", old: "plan-signature-old-secret-long-enough-22" } };
+const config = {
+  activeKeyId: "current",
+  keys: {
+    current: "plan-signature-test-secret-long-enough-1",
+    old: "plan-signature-old-secret-long-enough-22",
+  },
+};
 
 async function publicPlan() {
   const json = await protectCoursePlan(JSON.stringify(coursePlan(["A", "B", "C", "D"])), config);
@@ -27,26 +33,43 @@ describe("course plan signatures", () => {
     const edited = structuredClone(plan);
     edited.phases[1]!.topics[0]!.prerequisites = [];
     expect(await verifyCoursePlan(edited, signature, config)).toBe(false);
-    expect(await verifyCoursePlan({ ...plan, phases: plan.phases.slice(1) }, signature, config)).toBe(false);
+    expect(
+      await verifyCoursePlan({ ...plan, phases: plan.phases.slice(1) }, signature, config),
+    ).toBe(false);
   });
 
   it("rejects malformed or unknown-key signatures and survives key rotation", async () => {
     const plan = await publicPlan();
     const signature = await signCoursePlan(plan, config);
     expect(await verifyCoursePlan(plan, "garbage", config)).toBe(false);
-    expect(await verifyCoursePlan(plan, signature.replace("current", "missing"), config)).toBe(false);
+    expect(await verifyCoursePlan(plan, signature.replace("current", "missing"), config)).toBe(
+      false,
+    );
     const rotated = { activeKeyId: "old", keys: config.keys };
     expect(await verifyCoursePlan(plan, signature, rotated)).toBe(true);
-    expect(await verifyCoursePlan(plan, signature, { activeKeyId: "old", keys: { old: config.keys.old } })).toBe(false);
+    expect(
+      await verifyCoursePlan(plan, signature, {
+        activeKeyId: "old",
+        keys: { old: config.keys.old },
+      }),
+    ).toBe(false);
   });
 });
 
 describe("client address for guest rate limits", () => {
-  const headers = (values: Record<string, string>) => ({ get: (name: string) => values[name.toLowerCase()] ?? null });
+  const headers = (values: Record<string, string>) => ({
+    get: (name: string) => values[name.toLowerCase()] ?? null,
+  });
 
   it("uses the entry appended by the trusted proxy, not the client-supplied first value", () => {
-    expect(clientAddress(headers({ "x-forwarded-for": "6.6.6.6, 203.0.113.9" }), {})).toBe("203.0.113.9");
-    expect(clientAddress(headers({ "x-forwarded-for": "6.6.6.6, 203.0.113.9, 10.0.0.1" }), { TRUSTED_PROXY_HOPS: "2" })).toBe("203.0.113.9");
+    expect(clientAddress(headers({ "x-forwarded-for": "6.6.6.6, 203.0.113.9" }), {})).toBe(
+      "203.0.113.9",
+    );
+    expect(
+      clientAddress(headers({ "x-forwarded-for": "6.6.6.6, 203.0.113.9, 10.0.0.1" }), {
+        TRUSTED_PROXY_HOPS: "2",
+      }),
+    ).toBe("203.0.113.9");
   });
 
   it("ignores CF-Connecting-IP unless explicitly trusted", () => {

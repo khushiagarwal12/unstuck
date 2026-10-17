@@ -6,9 +6,11 @@ const TIMEOUT_MS = 45_000;
 export class ProviderError extends Error {}
 
 function friendly(status: number): ProviderError {
-  if (status === 429) return new ProviderError("Too many requests right now. Wait a moment and retry.");
+  if (status === 429)
+    return new ProviderError("Too many requests right now. Wait a moment and retry.");
   if (status === 402) return new ProviderError("AI credits are exhausted for this workspace.");
-  if (status === 401 || status === 403) return new ProviderError("The AI service rejected our credentials.");
+  if (status === 401 || status === 403)
+    return new ProviderError("The AI service rejected our credentials.");
   return new ProviderError(`The AI service is unavailable right now (${status}). Try again.`);
 }
 
@@ -29,11 +31,15 @@ function readText(data: { candidates?: { content?: { parts?: { text?: string }[]
 }
 
 /** Gemini on Vertex AI, authenticated with the runtime's Application Default Credentials. */
-export function vertexGenerate(env: Env, token: () => Promise<string> = () => accessToken(env)): Generate {
+export function vertexGenerate(
+  env: Env,
+  token: () => Promise<string> = () => accessToken(env),
+): Generate {
   const project = env["GOOGLE_CLOUD_PROJECT"] || env["FIREBASE_PROJECT_ID"];
   if (!project) throw new ProviderError("Vertex AI needs GOOGLE_CLOUD_PROJECT.");
   const location = env["GOOGLE_CLOUD_LOCATION"] || "us-central1";
-  const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
+  const host =
+    location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
   const models = {
     main: env["GEMINI_MODEL_MAIN"] || "gemini-2.5-flash",
     fast: env["GEMINI_MODEL_FAST"] || "gemini-2.5-flash-lite",

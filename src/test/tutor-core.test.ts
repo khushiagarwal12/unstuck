@@ -93,61 +93,91 @@ describe("rules the model cannot be trusted with", () => {
   };
 
   it("stops asking follow-ups after two", () => {
-    expect((normalize("diagnose", diag, { followUpCount: 2 }) as { needsFollowUp: boolean }).needsFollowUp).toBe(false);
-    expect((normalize("diagnose", diag, { followUpCount: 1 }) as { needsFollowUp: boolean }).needsFollowUp).toBe(true);
+    expect(
+      (normalize("diagnose", diag, { followUpCount: 2 }) as { needsFollowUp: boolean })
+        .needsFollowUp,
+    ).toBe(false);
+    expect(
+      (normalize("diagnose", diag, { followUpCount: 1 }) as { needsFollowUp: boolean })
+        .needsFollowUp,
+    ).toBe(true);
   });
 
   it("keeps a single observed answer at low confidence", () => {
-    const out = normalize("diagnose", {
-      ...diag,
-      hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
-    }, { learnerAnswer: "A", diagnosticCorrect: false }) as typeof diag;
+    const out = normalize(
+      "diagnose",
+      {
+        ...diag,
+        hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
+      },
+      { learnerAnswer: "A", diagnosticCorrect: false },
+    ) as typeof diag;
     expect(out.hypotheses[0]?.confidence).toBe("low");
     expect(out.needsFollowUp).toBe(true);
   });
 
   it("caps confidence at medium until three answers are observed", () => {
-    const out = normalize("diagnose", {
-      ...diag,
-      hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
-    }, {
-      learnerAnswer: "A",
-      diagnosticCorrect: false,
-      followUpAnswers: [{ q: "Why?", a: "B" }],
-      followUpCount: 1,
-    }) as typeof diag;
+    const out = normalize(
+      "diagnose",
+      {
+        ...diag,
+        hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
+      },
+      {
+        learnerAnswer: "A",
+        diagnosticCorrect: false,
+        followUpAnswers: [{ q: "Why?", a: "B" }],
+        followUpCount: 1,
+      },
+    ) as typeof diag;
     expect(out.hypotheses[0]?.confidence).toBe("medium");
   });
 
   it("allows higher confidence only after three observed answers", () => {
-    const out = normalize("diagnose", {
-      ...diag,
-      hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
-    }, {
-      learnerAnswer: "A",
-      diagnosticCorrect: false,
-      followUpAnswers: [{ q: "Why?", a: "B" }, { q: "Another check?", a: "C" }],
-      followUpCount: 2,
-    }) as typeof diag;
+    const out = normalize(
+      "diagnose",
+      {
+        ...diag,
+        hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
+      },
+      {
+        learnerAnswer: "A",
+        diagnosticCorrect: false,
+        followUpAnswers: [
+          { q: "Why?", a: "B" },
+          { q: "Another check?", a: "C" },
+        ],
+        followUpCount: 2,
+      },
+    ) as typeof diag;
     expect(out.hypotheses[0]?.confidence).toBe("high");
     expect(out.needsFollowUp).toBe(false);
   });
 
   it("lowers confidence when the learner disputes a hypothesis even after more evidence", () => {
-    const out = normalize("diagnose", {
-      ...diag,
-      hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
-    }, {
-      learnerAnswer: "A",
-      followUpAnswers: [{ q: "Why?", a: "B" }, { q: "Another check?", a: "C" }],
-      followUpCount: 2,
-      disputedHypotheses: ["x"],
-    }) as typeof diag;
+    const out = normalize(
+      "diagnose",
+      {
+        ...diag,
+        hypotheses: [{ ...diag.hypotheses[0]!, confidence: "high" }],
+      },
+      {
+        learnerAnswer: "A",
+        followUpAnswers: [
+          { q: "Why?", a: "B" },
+          { q: "Another check?", a: "C" },
+        ],
+        followUpCount: 2,
+        disputedHypotheses: ["x"],
+      },
+    ) as typeof diag;
     expect(out.hypotheses[0]?.confidence).toBe("low");
   });
 
   it("instructs the diagnosis to keep self-report distinct from evidence and surface contradictions", () => {
-    const prompt = promptFor("diagnose", { learnerPreferences: { selfReportedLevel: "confident" } });
+    const prompt = promptFor("diagnose", {
+      learnerPreferences: { selfReportedLevel: "confident" },
+    });
     expect(prompt).toContain("self-report distinct from demonstrated evidence");
     expect(prompt).toContain("contradictory");
     expect(prompt).toContain("disputed");
@@ -157,24 +187,116 @@ describe("rules the model cannot be trusted with", () => {
     const assessment = (id: string) => ({
       title: "a",
       purpose: "p",
-      objectiveQuestions: [{ id: `${id}-objective`, objective: "o", question: "q", options: ["a", "b", "c", "d"], correctIndex: 1, explanation: "e", hint: "h", points: 1 }],
-      openQuestions: [{ id: `${id}-open`, objective: "o", prompt: "p", referenceCriteria: "r", rubric: [{ criterion: "c", points: 1 }], hint: "h" }],
+      objectiveQuestions: [
+        {
+          id: `${id}-objective`,
+          objective: "o",
+          question: "q",
+          options: ["a", "b", "c", "d"],
+          correctIndex: 1,
+          explanation: "e",
+          hint: "h",
+          points: 1,
+        },
+      ],
+      openQuestions: [
+        {
+          id: `${id}-open`,
+          objective: "o",
+          prompt: "p",
+          referenceCriteria: "r",
+          rubric: [{ criterion: "c", points: 1 }],
+          hint: "h",
+        },
+      ],
       passCriteria: "p",
     });
     const course = {
-      title: "t", goal: "g", outcomes: ["o"],
+      title: "t",
+      goal: "g",
+      outcomes: ["o"],
       phases: [
-        { id: "phase-1", title: "First", purpose: "p", topics: [
-          { id: "a", name: "A", why: "w", covers: ["A"], prerequisites: ["b"], objectives: ["o"], subtopics: [{ name: "s", objective: "o" }], lesson: { explanation: "e", examples: [{ prompt: "p", walkthrough: "w" }], guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }] }, minutes: 5 },
-          { id: "b", name: "B", why: "w", covers: ["B"], prerequisites: ["a", "Outside"], objectives: ["o"], subtopics: [{ name: "s", objective: "o" }], lesson: { explanation: "e", examples: [{ prompt: "p", walkthrough: "w" }], guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }] }, minutes: 5 },
-        ], assessment: assessment("first") },
-        { id: "phase-2", title: "Second", purpose: "p", topics: [
-          { id: "c", name: "C", why: "w", covers: ["C"], prerequisites: ["a", "b"], objectives: ["o"], subtopics: [{ name: "s", objective: "o" }], lesson: { explanation: "e", examples: [{ prompt: "p", walkthrough: "w" }], guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }] }, minutes: 5 },
-          { id: "d", name: "D", why: "w", covers: ["D"], prerequisites: ["c"], objectives: ["o"], subtopics: [{ name: "s", objective: "o" }], lesson: { explanation: "e", examples: [{ prompt: "p", walkthrough: "w" }], guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }] }, minutes: 5 },
-        ], assessment: assessment("second") },
+        {
+          id: "phase-1",
+          title: "First",
+          purpose: "p",
+          topics: [
+            {
+              id: "a",
+              name: "A",
+              why: "w",
+              covers: ["A"],
+              prerequisites: ["b"],
+              objectives: ["o"],
+              subtopics: [{ name: "s", objective: "o" }],
+              lesson: {
+                explanation: "e",
+                examples: [{ prompt: "p", walkthrough: "w" }],
+                guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }],
+              },
+              minutes: 5,
+            },
+            {
+              id: "b",
+              name: "B",
+              why: "w",
+              covers: ["B"],
+              prerequisites: ["a", "Outside"],
+              objectives: ["o"],
+              subtopics: [{ name: "s", objective: "o" }],
+              lesson: {
+                explanation: "e",
+                examples: [{ prompt: "p", walkthrough: "w" }],
+                guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }],
+              },
+              minutes: 5,
+            },
+          ],
+          assessment: assessment("first"),
+        },
+        {
+          id: "phase-2",
+          title: "Second",
+          purpose: "p",
+          topics: [
+            {
+              id: "c",
+              name: "C",
+              why: "w",
+              covers: ["C"],
+              prerequisites: ["a", "b"],
+              objectives: ["o"],
+              subtopics: [{ name: "s", objective: "o" }],
+              lesson: {
+                explanation: "e",
+                examples: [{ prompt: "p", walkthrough: "w" }],
+                guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }],
+              },
+              minutes: 5,
+            },
+            {
+              id: "d",
+              name: "D",
+              why: "w",
+              covers: ["D"],
+              prerequisites: ["c"],
+              objectives: ["o"],
+              subtopics: [{ name: "s", objective: "o" }],
+              lesson: {
+                explanation: "e",
+                examples: [{ prompt: "p", walkthrough: "w" }],
+                guidedPractice: [{ prompt: "p", hint: "h", successCriteria: "s" }],
+              },
+              minutes: 5,
+            },
+          ],
+          assessment: assessment("second"),
+        },
       ],
     };
-    const out = normalize("course", course, {}) as { topics: { id: string; prerequisites: string[] }[] };
+    const out = normalize("course", course, {}) as {
+      topics: { id: string; prerequisites: string[] }[];
+    };
     expect(out.topics.map((t) => t.prerequisites)).toEqual([[], ["a"], ["a", "b"], ["c"]]);
   });
 });

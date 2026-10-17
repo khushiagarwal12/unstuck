@@ -28,7 +28,12 @@ export async function enforceSharedLimits(userId?: string): Promise<void> {
     if (!minute || !day) throw new Error("Shared rate-limit state could not be read.");
     const minuteCount = Number(minute.data()?.["count"] ?? 0);
     const dayCount = Number(day.data()?.["count"] ?? 0);
-    if (!Number.isSafeInteger(minuteCount) || !Number.isSafeInteger(dayCount) || minuteCount < 0 || dayCount < 0) {
+    if (
+      !Number.isSafeInteger(minuteCount) ||
+      !Number.isSafeInteger(dayCount) ||
+      minuteCount < 0 ||
+      dayCount < 0
+    ) {
       throw new Error("Shared rate-limit state is invalid.");
     }
     if (minuteCount >= perMinuteLimit || dayCount >= perDayLimit) return false;

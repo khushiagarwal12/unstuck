@@ -33,7 +33,11 @@ export const askTutor = createServerFn({ method: "POST" })
     const json = await runTutor(pickProvider(process.env), data.action, data.payload);
     if (data.action === "course") {
       const protectedPlan = await protectCoursePlan(json, signingConfig);
-      return { json: protectedPlan, planSignature: await signCoursePlan(JSON.parse(protectedPlan), signingConfig) as string | null };
+      return {
+        json: protectedPlan,
+        planSignature: (await signCoursePlan(JSON.parse(protectedPlan), signingConfig)) as
+          string | null,
+      };
     }
     if (data.action !== "start" && data.action !== "transfer") return { json, planSignature: null };
     return {

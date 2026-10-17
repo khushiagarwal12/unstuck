@@ -11,16 +11,29 @@ type AnswerKey = {
   nonce: string;
 };
 
-export type AnswerResult = { correct: boolean; explanation?: string; concept?: string; context?: string };
+export type AnswerResult = {
+  correct: boolean;
+  explanation?: string;
+  concept?: string;
+  context?: string;
+};
 export type AnswerReplayStore = {
-  consume(input: { token: string; choice: number; result: AnswerResult; expiresAt: number }): Promise<AnswerResult>;
+  consume(input: {
+    token: string;
+    choice: number;
+    result: AnswerResult;
+    expiresAt: number;
+  }): Promise<AnswerResult>;
 };
 export type SigningConfig = { activeKeyId: string; keys: Record<string, string> };
 type SigningInput = string | SigningConfig | undefined;
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const COURSE_TOKEN_TTL_MS = 10 * 365 * 24 * 60 * 60 * 1000;
-const submissions = new Map<string, { choice: number; result: { correct: boolean; explanation?: string }; expiresAt: number }>();
+const submissions = new Map<
+  string,
+  { choice: number; result: { correct: boolean; explanation?: string }; expiresAt: number }
+>();
 
 function encodeBase64Url(value: Uint8Array): string {
   let binary = "";
@@ -36,16 +49,15 @@ function decodeBase64Url(value: string): Uint8Array {
 
 async function encryptionKey(secret: string): Promise<CryptoKey> {
   const material = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
-  return crypto.subtle.importKey(
-    "raw",
-    material,
-    { name: "AES-GCM" },
-    false,
-    ["encrypt", "decrypt"],
-  );
+  return crypto.subtle.importKey("raw", material, { name: "AES-GCM" }, false, [
+    "encrypt",
+    "decrypt",
+  ]);
 }
 
-export function signingConfigFromEnvironment(env: Record<string, string | undefined>): SigningConfig {
+export function signingConfigFromEnvironment(
+  env: Record<string, string | undefined>,
+): SigningConfig {
   const serialized = env["ANSWER_SIGNING_KEYS_JSON"];
   const activeKeyId = env["ANSWER_SIGNING_ACTIVE_KEY_ID"];
   if (!serialized || !activeKeyId) {
@@ -62,8 +74,10 @@ export function signingConfigFromEnvironment(env: Record<string, string | undefi
   if (typeof keys !== "object" || keys === null || Array.isArray(keys)) {
     throw new Error("Answer verification key configuration is invalid.");
   }
-  const validEntries = Object.entries(keys).filter(([keyId, value]) =>
-    /^[a-zA-Z0-9_-]{1,40}$/.test(keyId) && typeof value === "string" && value.length >= 32);
+  const validEntries = Object.entries(keys).filter(
+    ([keyId, value]) =>
+      /^[a-zA-Z0-9_-]{1,40}$/.test(keyId) && typeof value === "string" && value.length >= 32,
+  );
   if (validEntries.length !== Object.keys(keys).length || !Object.hasOwn(keys, activeKeyId)) {
     throw new Error("Answer verification key configuration is invalid.");
   }
@@ -71,13 +85,18 @@ export function signingConfigFromEnvironment(env: Record<string, string | undefi
 }
 
 function configuredKeys(input: SigningInput): SigningConfig {
-  const config = typeof input === "object" && input !== null
-    ? input
-    : typeof input === "string" && input.length >= 32
-      ? { activeKeyId: "legacy", keys: { legacy: input } }
-      : undefined;
-  if (!config || !/^[a-zA-Z0-9_-]{1,40}$/.test(config.activeKeyId) ||
-    !config.keys[config.activeKeyId] || Object.values(config.keys).some((key) => key.length < 32)) {
+  const config =
+    typeof input === "object" && input !== null
+      ? input
+      : typeof input === "string" && input.length >= 32
+        ? { activeKeyId: "legacy", keys: { legacy: input } }
+        : undefined;
+  if (
+    !config ||
+    !/^[a-zA-Z0-9_-]{1,40}$/.test(config.activeKeyId) ||
+    !config.keys[config.activeKeyId] ||
+    Object.values(config.keys).some((key) => key.length < 32)
+  ) {
     throw new Error("Answer verification is not configured. Please try again later.");
   }
   return config;
@@ -94,7 +113,8 @@ async function decryptToken(token: string, input: SigningInput) {
   const config = configuredKeys(input);
   const { keyId, iv: encodedIv, ciphertext: encodedCiphertext } = tokenParts(token, config);
   const secret = config.keys[keyId];
-  if (!secret || !encodedIv || !encodedCiphertext) throw new Error("This question could not be verified. Please try again.");
+  if (!secret || !encodedIv || !encodedCiphertext)
+    throw new Error("This question could not be verified. Please try again.");
   let iv: Uint8Array;
   let encrypted: Uint8Array;
   try {
@@ -105,8 +125,15 @@ async function decryptToken(token: string, input: SigningInput) {
   }
   if (iv.length !== 12) throw new Error("This question could not be verified. Please try again.");
   try {
-    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv as BufferSource }, await encryptionKey(secret), encrypted as BufferSource);
-    return { keyId, parsed: JSON.parse(new TextDecoder().decode(plaintext)) as AnswerKey & { payload?: unknown } };
+    const plaintext = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: iv as BufferSource },
+      await encryptionKey(secret),
+      encrypted as BufferSource,
+    );
+    return {
+      keyId,
+      parsed: JSON.parse(new TextDecoder().decode(plaintext)) as AnswerKey & { payload?: unknown },
+    };
   } catch {
     throw new Error("This question could not be verified. Please try again.");
   }
@@ -119,7 +146,9 @@ export async function issueAnswerKey(
 ): Promise<string> {
   const config = configuredKeys(secret);
   const nonce = encodeBase64Url(crypto.getRandomValues(new Uint8Array(16)));
-  const plaintext = new TextEncoder().encode(JSON.stringify({ ...key, expiresAt: now + TOKEN_TTL_MS, nonce }));
+  const plaintext = new TextEncoder().encode(
+    JSON.stringify({ ...key, expiresAt: now + TOKEN_TTL_MS, nonce }),
+  );
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encrypted = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv },
@@ -136,12 +165,14 @@ export async function sealCourseAssessment(
 ): Promise<string> {
   const config = configuredKeys(secret);
   const nonce = encodeBase64Url(crypto.getRandomValues(new Uint8Array(16)));
-  const plaintext = new TextEncoder().encode(JSON.stringify({
-    kind: "course-assessment",
-    payload,
-    expiresAt: now + COURSE_TOKEN_TTL_MS,
-    nonce,
-  }));
+  const plaintext = new TextEncoder().encode(
+    JSON.stringify({
+      kind: "course-assessment",
+      payload,
+      expiresAt: now + COURSE_TOKEN_TTL_MS,
+      nonce,
+    }),
+  );
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encrypted = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv },
@@ -157,10 +188,18 @@ export async function openCourseAssessment(
   now = Date.now(),
 ): Promise<Record<string, unknown>> {
   configuredKeys(secret);
-  const { parsed } = await decryptToken(token, secret) as { parsed: AnswerKey & { payload?: unknown } };
+  const { parsed } = (await decryptToken(token, secret)) as {
+    parsed: AnswerKey & { payload?: unknown };
+  };
   try {
-    if (parsed.kind !== "course-assessment" || typeof parsed.expiresAt !== "number" || parsed.expiresAt < now ||
-      typeof parsed.nonce !== "string" || parsed.payload === null || typeof parsed.payload !== "object") {
+    if (
+      parsed.kind !== "course-assessment" ||
+      typeof parsed.expiresAt !== "number" ||
+      parsed.expiresAt < now ||
+      typeof parsed.nonce !== "string" ||
+      parsed.payload === null ||
+      typeof parsed.payload !== "object"
+    ) {
       throw new Error("This assignment has expired. Please generate it again.");
     }
     return parsed.payload as Record<string, unknown>;
@@ -181,7 +220,9 @@ export async function protectTutorQuestion(
     {
       kind,
       correctIndex: question.correctIndex,
-      ...(typeof question["explanation"] === "string" ? { explanation: question["explanation"] } : {}),
+      ...(typeof question["explanation"] === "string"
+        ? { explanation: question["explanation"] }
+        : {}),
       ...(concept ? { concept } : {}),
       ...(typeof question["context"] === "string" ? { context: question["context"] } : {}),
     },
@@ -221,7 +262,8 @@ export async function checkAnswerKey(
 
   const prior = submissions.get(token);
   if (prior && prior.expiresAt >= now) {
-    if (prior.choice !== choice) throw new Error("This question has already been answered. Please continue to the next step.");
+    if (prior.choice !== choice)
+      throw new Error("This question has already been answered. Please continue to the next step.");
     return prior.result;
   }
 
@@ -232,7 +274,12 @@ export async function checkAnswerKey(
     ...(parsed.context ? { context: parsed.context } : {}),
   };
   if (replayStore) {
-    const stored = await replayStore.consume({ token, choice, result, expiresAt: parsed.expiresAt });
+    const stored = await replayStore.consume({
+      token,
+      choice,
+      result,
+      expiresAt: parsed.expiresAt,
+    });
     return {
       correct: stored.correct,
       ...(stored.explanation ? { explanation: stored.explanation } : {}),
@@ -242,7 +289,8 @@ export async function checkAnswerKey(
   }
   submissions.set(token, { choice, result, expiresAt: parsed.expiresAt });
   if (submissions.size > 5000) {
-    for (const [usedToken, submission] of submissions) if (submission.expiresAt < now) submissions.delete(usedToken);
+    for (const [usedToken, submission] of submissions)
+      if (submission.expiresAt < now) submissions.delete(usedToken);
   }
   return result;
 }
