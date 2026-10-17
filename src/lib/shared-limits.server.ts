@@ -2,17 +2,14 @@ import { createHash } from "node:crypto";
 import { getRequest } from "@tanstack/react-start/server";
 
 import { firestore } from "@/integrations/firebase/admin.server";
+import { clientAddress } from "./client-address.server";
 
 const perMinuteLimit = 20;
 const perDayLimit = 300;
 
 function callerIdentity(userId?: string) {
   if (userId) return `user:${userId}`;
-  const headers = getRequest()?.headers;
-  const address = headers?.get("cf-connecting-ip") ??
-    headers?.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    "unknown-guest";
-  return `guest:${address}`;
+  return `guest:${clientAddress(getRequest()?.headers)}`;
 }
 
 function digest(value: string) {

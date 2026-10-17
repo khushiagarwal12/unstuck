@@ -43,7 +43,7 @@ export const Route = createFileRoute("/")({
 type Profile = { id: string; display_name: string | null; avatar_url: string | null; goal: string | null; subject: string | null; level: string | null; study_minutes: number | null; preferred_styles: string[]; onboarded: boolean };
 type Concept = { id: string; concept: string; status: string; misconceptions: string[]; styles: string[]; hints_used: number; attempts: number; clean_successes: number; review_interval_days: number; review_at: string | null; last_explanation: string | null; updated_at: string };
 type Topic = { id: string; name: string; why: string; prerequisites: string[]; minutes: number };
-type Course = { id: string; title: string; goal: string | null; outcomes: string[]; topics: Topic[]; plan: CoursePlan | null; created_at: string };
+type Course = { id: string; title: string; goal: string | null; outcomes: string[]; topics: Topic[]; plan: CoursePlan | null; plan_signature?: string | null; created_at: string };
 type CourseProgress = {
   user_id: string;
   course_id: string;
@@ -75,7 +75,7 @@ type ImportedGuestActivity = {
   record: { concept: string; correct: boolean; explanation: string | null; status: "Not assessed" };
 };
 
-type View = { kind: "home" } | { kind: "learn"; topic?: string; key: number } | { kind: "settings" };
+type View = { kind: "home" } | { kind: "learn"; topic?: string | undefined; key: number } | { kind: "settings" };
 
 const STYLE_OPTIONS = [
   { id: "visual", label: "Pictures & diagrams" },
@@ -593,6 +593,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
   const [courseGoal, setCourseGoal] = useState(profile.subject ?? "");
   const [courseMaterial, setCourseMaterial] = useState("");
   const [draft, setDraft] = useState<CoursePlan | null>(null);
+  const [draftSignature, setDraftSignature] = useState<string | null>(null);
   const [activeCourseId, setActiveCourseId] = useState(() =>
     summarizeCourses(courses, courseProgress, assessmentAttempts)[0]?.course.id ?? courses[0]?.id ?? "");
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
@@ -698,15 +699,10 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
     }
     let data: Awaited<ReturnType<typeof createSavedCourse>>;
     try {
-      data = await createSavedCourse({ data: {
-      title: course.title,
-      goal: course.goal,
-      outcomes: course.outcomes,
-      topics: course.topics,
-      plan: course.plan,
-      } });
-    } catch {
-      setErr("Couldn't create a fresh course copy. Your saved course and progress are unchanged.");
+      if (!course.plan_signature) throw new Error("This older plan can't be copied. Build a new plan instead.");
+      data = await createSavedCourse({ data: { plan: course.plan, planSignature: course.plan_signature } });
+    } catch (error) {
+      setErr(error instanceof Error && error.message.includes("older plan") ? error.message : "Couldn't create a fresh course copy. Your saved course and progress are unchanged.");
       setResettingCourse(false);
       return;
     }
@@ -770,7 +766,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
         misconceptions: c.misconceptions.slice(0, 2).map((item) => item.slice(0, 180)),
         lastExplanation: c.last_explanation?.slice(0, 500) ?? null,
       }));
-      const { json } = await ask({ data: { action: "course", payload: {
+      const { json, planSignature } = await ask({ data: { action: "course", payload: {
         wantsToLearn: courseGoal.trim(),
         ...prefs,
         diagnosticResults,
@@ -781,12 +777,14 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
       const parsed = publicCourseSchema.safeParse(JSON.parse(json));
       if (!parsed.success) throw new Error("The generated course plan did not match the required structure. Please try again.");
       setDraft(parsed.data);
+      setDraftSignature(planSignature);
     } catch (e) { setErr(e instanceof Error ? e.message : "Couldn't build a course."); }
     finally { setCreating(false); }
   };
 
   const saveDraft = async () => {
     if (!draft) return;
+    if (!draftSignature) { setErr("This proposal can't be saved. Please build the plan again."); return; }
     setCreating(true); setErr(null);
     const topics = draft.phases.flatMap((phase) => phase.topics.map((topic) => ({
       id: topic.id, name: topic.name, why: topic.why, prerequisites: topic.prerequisites, minutes: topic.minutes,
@@ -794,7 +792,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
     let data: Awaited<ReturnType<typeof createSavedCourse>>;
     try {
       data = await createSavedCourse({ data: {
-        title: draft.title, goal: draft.goal, outcomes: draft.outcomes, topics, plan: draft,
+        plan: draft, planSignature: draftSignature,
       } });
     } catch {
       setErr("Couldn't save the plan. The proposed plan is still available to review.");
@@ -840,7 +838,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
       ...selectedAttempts.filter((attempt) => attempt.evaluation.passed && !attempt.evaluation.needsFollowUp).map((attempt) => attempt.phase_id),
     ]);
     const openPhase = selected.plan.phases.find((phase) => !completedPhases.has(phase.id));
-    const savedPosition = entries.find(({ phase, topic }) => phase.id === openPhase?.id && topic.id === previous?.current_topic_id && !completed.includes(topic.id));
+    const savedPosition = entries.find(({ phase, topic }) => phase.id === openPhase?.id && topic.id === previous?.current_topic_id && !completed.includes(topic.id))?.topic;
     const next = savedPosition ?? openPhase?.topics.find((topic) => !completed.includes(topic.id));
     const nextPhaseId = openPhase?.id ?? null;
     try {
@@ -983,7 +981,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
     const assignmentKey = `${summary.course.id}:${action.phaseId}`;
     setOpenAssignmentKey(assignmentKey);
     window.setTimeout(() => {
-      const details = document.getElementById(`phase-assignment-${assignmentKey}`);
+      const details = document.getElementById(`phase-assignment-${assignmentKey}`) as HTMLDetailsElement | null;
       if (details) {
         (details as HTMLDetailsElement).open = true;
         details.scrollIntoView({ behavior: "smooth", block: "center" });

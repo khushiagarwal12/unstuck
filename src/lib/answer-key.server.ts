@@ -105,7 +105,7 @@ async function decryptToken(token: string, input: SigningInput) {
   }
   if (iv.length !== 12) throw new Error("This question could not be verified. Please try again.");
   try {
-    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, await encryptionKey(secret), encrypted);
+    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv as BufferSource }, await encryptionKey(secret), encrypted as BufferSource);
     return { keyId, parsed: JSON.parse(new TextDecoder().decode(plaintext)) as AnswerKey & { payload?: unknown } };
   } catch {
     throw new Error("This question could not be verified. Please try again.");
@@ -187,7 +187,7 @@ export async function protectTutorQuestion(
     },
     secret,
   );
-  delete question.correctIndex;
+  delete (question as Partial<TutorQuestion>).correctIndex;
   if (kind === "diagnostic" && Array.isArray(question["options"])) {
     question["options"] = question["options"].map((option) => {
       if (typeof option !== "object" || option === null || !("text" in option)) return option;

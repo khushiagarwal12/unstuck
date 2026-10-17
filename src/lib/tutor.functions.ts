@@ -6,6 +6,7 @@ import { checkAnswerKey, protectTutorQuestion } from "./answer-key.server";
 import { protectCoursePlan } from "./course-assessment.server";
 import { enforceLimits } from "./limits.server";
 import { enforceSharedLimits } from "./shared-limits.server";
+import { signCoursePlan } from "./plan-signature.server";
 import { runTutor } from "./tutor-core";
 import { ACTIONS } from "./tutor-schemas";
 import { signingConfigFromEnvironment } from "./answer-key.server";
@@ -31,10 +32,12 @@ export const askTutor = createServerFn({ method: "POST" })
     const signingConfig = signingConfigFromEnvironment(process.env);
     const json = await runTutor(pickProvider(process.env), data.action, data.payload);
     if (data.action === "course") {
-      return { json: await protectCoursePlan(json, signingConfig) };
+      const protectedPlan = await protectCoursePlan(json, signingConfig);
+      return { json: protectedPlan, planSignature: await signCoursePlan(JSON.parse(protectedPlan), signingConfig) as string | null };
     }
-    if (data.action !== "start" && data.action !== "transfer") return { json };
+    if (data.action !== "start" && data.action !== "transfer") return { json, planSignature: null };
     return {
+      planSignature: null,
       json: await protectTutorQuestion(
         json,
         data.action === "start" ? "diagnostic" : "transfer",

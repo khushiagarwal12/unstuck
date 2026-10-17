@@ -30,6 +30,23 @@ downloaded here), Vertex AI calls, a Docker image build, and any browser interac
 Known gaps: `saveCourse` stores the plan the browser sends, so a learner can edit their own phase gating (sealed assignment
 questions are unaffected); guest rate limiting trusts the first `X-Forwarded-For` value, which is likely spoofable on Cloud Run.
 
+## Hardening update (2026-10-17, second pass)
+
+- **Type check clean:** `tsc --noEmit` now reports 0 errors (was 107). `noPropertyAccessFromIndexSignature` was turned off
+  (style only; it flagged `process.env.X` access). The remaining fixes were real typing issues, plus one real bug:
+  `startCourse` used a `{phase, topic}` entry as a topic, so resuming at a saved lesson position lost the lesson id.
+- **Signed course plans:** `askTutor` now returns a `planSignature` (HMAC-SHA256 with the active signing key) for generated plans.
+  `saveCourse` verifies it and derives title, goal, outcomes and topics from the signed plan, so learners cannot edit phase
+  gating or prerequisites before saving. Courses saved before this change have no signature and cannot be copied with
+  "Start fresh copy" (the UI says to build a new plan).
+- **Guest rate limits:** the client IP is now the `X-Forwarded-For` entry appended by the trusted proxy (counted from the end,
+  `TRUSTED_PROXY_HOPS`, default 1). `CF-Connecting-IP` is ignored unless `TRUST_CF_CONNECTING_IP=true`.
+- **Tests:** 75 pass (6 new: signature accept/tamper/rotation, client-address cases). `vite build` succeeds and the built server
+  answers `GET /` with 200.
+
+Still unverified: real Firebase sign-in, Firestore reads/writes and security rules (no emulator available here), Vertex AI
+calls, a Docker image build, and browser interaction. Firestore TTL policies and signing keys still need manual setup.
+
 ## Scope and status
 
 This work replaces the Lovable Auth/Supabase persistence foundation with Firebase Authentication, Cloud Firestore,

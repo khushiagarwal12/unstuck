@@ -15,7 +15,7 @@ type Hyp = { label: string; summary: string; confidence: "low" | "medium" | "hig
 type Diagnosis = { demonstrated: string[]; hypotheses: Hyp[]; unresolved: string[]; needsFollowUp: boolean; followUp: { question: string; options: string[]; why: string } | null; recommendedStyle: Style };
 type Style = "visual" | "example" | "hint" | "simpler" | "analogy" | "prerequisite";
 type Lesson = { title: string; body: string; diagram: string | null; steps: string[]; style: Style };
-type Transfer = { question: string; options: string[]; answerToken: string; context: string; explanation?: string };
+type Transfer = { question: string; options: string[]; answerToken: string; context: string; explanation?: string | undefined };
 export type Status = "Not assessed" | "Needs more practice" | "Progressing" | "Demonstrated under current criteria";
 export type SessionRecord = { concept: string; status: Status; misconceptions: string[]; styles: Style[]; hintsUsed: number; correct: boolean; clean: boolean; explanation: string | null };
 
@@ -42,7 +42,7 @@ const STAGES: { id: Stage; label: string }[] = [
   { id: "transfer", label: "Verify" },
 ];
 
-export function LearnSession({ initialTopic, prefs, onRecord, onExit, storageKey }: { initialTopic?: string; prefs?: Record<string, unknown>; onRecord?: (r: SessionRecord) => void; onExit?: () => void; storageKey?: string }) {
+export function LearnSession({ initialTopic, prefs, onRecord, onExit, storageKey }: { initialTopic?: string | undefined; prefs?: Record<string, unknown> | undefined; onRecord?: ((r: SessionRecord) => void) | undefined; onExit?: (() => void) | undefined; storageKey?: string | undefined }) {
   const ask = useServerFn(askTutor);
   const checkAnswer = useServerFn(checkTutorAnswer);
   const saveHintUse = useServerFn(recordLearningHint);

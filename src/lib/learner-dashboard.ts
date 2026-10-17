@@ -3,7 +3,7 @@ export type DashboardPhase = {
   id: string;
   title: string;
   topics: DashboardTopic[];
-  assessment?: { answerToken?: string | null };
+  assessment?: { answerToken?: string | null | undefined };
 };
 export type DashboardCourse = {
   id: string;
