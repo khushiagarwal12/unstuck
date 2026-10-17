@@ -11,10 +11,10 @@ export const firestoreAnswerReplayStore: AnswerReplayStore = {
       const snapshot = await transaction.get(ref);
       if (snapshot.exists) {
         const saved = snapshot.data();
-        if (saved?.choice !== choice) {
+        if (saved?.["choice"] !== choice) {
           throw new Error("This question has already been answered. Please continue to the next step.");
         }
-        return saved?.result as AnswerResult;
+        return saved?.["result"] as AnswerResult;
       }
       transaction.create(ref, {
         choice,

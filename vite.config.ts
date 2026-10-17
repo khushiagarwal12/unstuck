@@ -12,6 +12,6 @@ export default defineConfig({
     tailwindcss(),
     tsConfigPaths(),
     // Node server output (.output/server/index.mjs) for the Cloud Run image; NITRO_PRESET overrides it.
-    nitro({ preset: process.env.NITRO_PRESET ?? "node-server" }),
+    nitro({ preset: process.env["NITRO_PRESET"] ?? "node-server" }),
   ],
 });

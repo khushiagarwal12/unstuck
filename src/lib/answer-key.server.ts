@@ -181,20 +181,20 @@ export async function protectTutorQuestion(
     {
       kind,
       correctIndex: question.correctIndex,
-      ...(typeof question.explanation === "string" ? { explanation: question.explanation } : {}),
+      ...(typeof question["explanation"] === "string" ? { explanation: question["explanation"] } : {}),
       ...(concept ? { concept } : {}),
-      ...(typeof question.context === "string" ? { context: question.context } : {}),
+      ...(typeof question["context"] === "string" ? { context: question["context"] } : {}),
     },
     secret,
   );
   delete question.correctIndex;
-  if (kind === "diagnostic" && Array.isArray(question.options)) {
-    question.options = question.options.map((option) => {
+  if (kind === "diagnostic" && Array.isArray(question["options"])) {
+    question["options"] = question["options"].map((option) => {
       if (typeof option !== "object" || option === null || !("text" in option)) return option;
       return { text: option.text };
     });
   }
-  if (kind === "transfer") delete question.explanation;
+  if (kind === "transfer") delete question["explanation"];
   return JSON.stringify({ ...question, answerToken });
 }
 

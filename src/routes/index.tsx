@@ -355,24 +355,24 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
       const workspace = await readWorkspace({ data: { displayName: user.displayName, avatarUrl: user.photoURL } });
       const prof = workspace.profile as Profile | null;
       setProfile(prof);
-      setConcepts(workspace.concepts as Concept[]);
+      setConcepts(workspace.concepts as unknown as Concept[]);
       const parsedCourses: Course[] = [];
       for (const row of workspace.courses as Record<string, unknown>[]) {
         let plan: CoursePlan | null = null;
-        if (row.plan) {
-          const parsed = publicCourseSchema.safeParse(row.plan);
+        if (row["plan"]) {
+          const parsed = publicCourseSchema.safeParse(row["plan"]);
           if (parsed.success) plan = parsed.data;
         }
-        parsedCourses.push({ ...row, plan, topics: (row.topics ?? []) as unknown as Topic[] } as Course);
+        parsedCourses.push({ ...row, plan, topics: (row["topics"] ?? []) as unknown as Topic[] } as Course);
       }
       setCourses(parsedCourses);
-      setCourseProgress(Object.fromEntries(Object.values(workspace.courseProgress).map((row) => [row.course_id, {
+      setCourseProgress(Object.fromEntries(Object.values(workspace.courseProgress as Record<string, Record<string, unknown>>).map((row) => [row["course_id"] as string, {
         ...row,
-        assessment_responses: (row.assessment_responses ?? {}) as Record<string, string>,
-      } as CourseProgress])));
-      setAssessmentAttempts(workspace.assessmentAttempts.flatMap((row) => {
-        const evaluation = assignmentResultSchema.safeParse(row.evaluation);
-        return evaluation.success ? [{ ...row, evaluation: evaluation.data } as CourseAssessmentAttempt] : [];
+        assessment_responses: (row["assessment_responses"] ?? {}) as Record<string, string>,
+      } as unknown as CourseProgress])));
+      setAssessmentAttempts((workspace.assessmentAttempts as Record<string, unknown>[]).flatMap((row) => {
+        const evaluation = assignmentResultSchema.safeParse(row["evaluation"]);
+        return evaluation.success ? [{ ...row, evaluation: evaluation.data } as unknown as CourseAssessmentAttempt] : [];
       }));
       setImportedGuestActivity(workspace.guestActivity.flatMap((row) => {
         const parsed = zImportedGuestActivity.safeParse(row);
@@ -915,17 +915,17 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
     setPendingAttemptIds((current) => ({ ...current, [submissionKey]: attemptId }));
     setSubmittingPhaseId(submissionKey); setErr(null);
     try {
-      const attempt = await gradeAssignment({ data: {
+      const attempt = (await gradeAssignment({ data: {
         attemptId,
         courseId: course.id,
         phaseId: phase.id,
         answerToken: phase.assessment.answerToken,
         objectiveAnswers: objectives,
         writtenAnswers: written,
-      } });
-      const parsed = assignmentResultSchema.safeParse(attempt.evaluation);
+      } })) as Record<string, unknown>;
+      const parsed = assignmentResultSchema.safeParse(attempt["evaluation"]);
       if (!parsed.success) throw new Error("The saved assessment result could not be validated. Please reload your course.");
-      const saved = { ...attempt, evaluation: parsed.data } as CourseAssessmentAttempt;
+      const saved = { ...attempt, evaluation: parsed.data } as unknown as CourseAssessmentAttempt;
       rememberAssessmentAttempt(saved);
       try { window.localStorage.setItem(storageKey, JSON.stringify({ attemptId, completed: true })); } catch {
         setErr("Your score is saved, but this browser couldn't record the finished submission marker.");
@@ -985,7 +985,7 @@ function Dashboard({ profile, concepts, courses, courseProgress, saveCourseProgr
     window.setTimeout(() => {
       const details = document.getElementById(`phase-assignment-${assignmentKey}`);
       if (details) {
-        details.open = true;
+        (details as HTMLDetailsElement).open = true;
         details.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }, 0);

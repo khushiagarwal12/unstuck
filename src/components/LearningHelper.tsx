@@ -44,25 +44,25 @@ const persistedMessages = (value: unknown): Message[] => {
   return value.slice(-12).flatMap((item): Message[] => {
     if (typeof item !== "object" || item === null) return [];
     const message = item as Record<string, unknown>;
-    if ((message.role !== "learner" && message.role !== "helper") ||
-      typeof message.text !== "string" || message.text.length > 1800 ||
-      !helperModes.includes(message.mode as HelperMode)) return [];
-    if (message.role === "helper") {
-      const parsed = helperReplySchema.safeParse(message.reply);
-      return parsed.success ? [{ role: "helper", mode: parsed.data.mode, text: message.text, reply: parsed.data }] : [];
+    if ((message["role"] !== "learner" && message["role"] !== "helper") ||
+      typeof message["text"] !== "string" || message["text"].length > 1800 ||
+      !helperModes.includes(message["mode"] as HelperMode)) return [];
+    if (message["role"] === "helper") {
+      const parsed = helperReplySchema.safeParse(message["reply"]);
+      return parsed.success ? [{ role: "helper", mode: parsed.data.mode, text: message["text"], reply: parsed.data }] : [];
     }
-    return [{ role: "learner", mode: message.mode as HelperMode, text: message.text }];
+    return [{ role: "learner", mode: message["mode"] as HelperMode, text: message["text"] }];
   });
 };
 
 class VisualBoundary extends Component<{ children: ReactNode; fallback: string }, { failed: boolean }> {
-  state = { failed: false };
+  override state = { failed: false };
 
   static getDerivedStateFromError() {
     return { failed: true };
   }
 
-  render() {
+  override render() {
     return this.state.failed ? <p role="alert" className="rounded-md bg-secondary p-3 text-sm">{this.props.fallback}</p> : this.props.children;
   }
 }

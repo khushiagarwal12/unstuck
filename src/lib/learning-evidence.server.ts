@@ -27,11 +27,11 @@ export async function recordVerifiedAnswer(
     ]);
     if (attemptSnapshot.exists) return;
     const previous = conceptSnapshot.data() ?? {};
-    const previousTransferResults = Array.isArray(previous.recent_transfer_evidence)
-      ? previous.recent_transfer_evidence as { correct: boolean; context: string; clean: boolean }[]
+    const previousTransferResults = Array.isArray(previous["recent_transfer_evidence"])
+      ? previous["recent_transfer_evidence"] as { correct: boolean; context: string; clean: boolean }[]
       : [];
     const context = kind === "transfer" ? result.context ?? "unknown-context" : "diagnostic";
-    const clean = kind === "transfer" && !previous.hint_since_attempt;
+    const clean = kind === "transfer" && !previous["hint_since_attempt"];
     const recentTransferResults = kind === "transfer"
       ? [{ correct: result.correct, context, clean }, ...previousTransferResults].slice(0, 2)
       : previousTransferResults;
@@ -44,22 +44,22 @@ export async function recordVerifiedAnswer(
         ? "Progressing"
         : kind === "transfer"
           ? "Needs more practice"
-          : previous.status ?? "Not assessed";
-    const cleanSuccesses = Number(previous.clean_successes ?? 0) + (clean && result.correct ? 1 : 0);
+          : previous["status"] ?? "Not assessed";
+    const cleanSuccesses = Number(previous["clean_successes"] ?? 0) + (clean && result.correct ? 1 : 0);
     const reviewIntervalDays = clean && result.correct
-      ? Math.min(Number(previous.review_interval_days ?? 1) * 2, 30)
+      ? Math.min(Number(previous["review_interval_days"] ?? 1) * 2, 30)
       : 1;
     const updated = {
       concept: result.concept,
       status,
-      misconceptions: Array.isArray(previous.misconceptions) ? previous.misconceptions : [],
-      styles: Array.isArray(previous.styles) ? previous.styles : [],
-      hints_used: Number(previous.hints_used ?? 0),
-      attempts: Number(previous.attempts ?? 0) + 1,
+      misconceptions: Array.isArray(previous["misconceptions"]) ? previous["misconceptions"] : [],
+      styles: Array.isArray(previous["styles"]) ? previous["styles"] : [],
+      hints_used: Number(previous["hints_used"] ?? 0),
+      attempts: Number(previous["attempts"] ?? 0) + 1,
       clean_successes: cleanSuccesses,
       review_interval_days: reviewIntervalDays,
       review_at: new Date(Date.now() + reviewIntervalDays * 86_400_000).toISOString(),
-      last_explanation: typeof previous.last_explanation === "string" ? previous.last_explanation : null,
+      last_explanation: typeof previous["last_explanation"] === "string" ? previous["last_explanation"] : null,
       updated_at: now,
       recent_transfer_evidence: recentTransferResults,
       hint_since_attempt: false,
@@ -84,10 +84,10 @@ export async function recordLearningHint(userId: string, concept: string) {
     const current = snapshot.data() ?? {};
     transaction.set(ref, {
       concept,
-      status: current.status ?? "Not assessed",
-      attempts: current.attempts ?? 0,
-      clean_successes: current.clean_successes ?? 0,
-      hints_used: Number(current.hints_used ?? 0) + 1,
+      status: current["status"] ?? "Not assessed",
+      attempts: current["attempts"] ?? 0,
+      clean_successes: current["clean_successes"] ?? 0,
+      hints_used: Number(current["hints_used"] ?? 0) + 1,
       hint_since_attempt: true,
       updated_at: now,
     }, { merge: true });

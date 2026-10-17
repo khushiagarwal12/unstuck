@@ -49,21 +49,21 @@ function subcollection(userId: string, name: string) {
   return learnerCollection(firestore(), userId, name);
 }
 
-function plain<T extends DocumentData>(snapshot: { id: string; data: () => T | undefined }, userId: string) {
+function plain<T extends DocumentData>(snapshot: { id: string; data: () => T | undefined }, userId: string): DocumentData & { id: string; user_id: string } {
   return { ...(snapshot.data() ?? {}), id: snapshot.id, user_id: userId };
 }
 
 function completedPhases(
   courses: { id: string; plan?: unknown }[],
-  attempts: { course_id: string; phase_id: string; evaluation: unknown }[],
+  attempts: DocumentData[],
 ) {
   const passed = new Map<string, Set<string>>();
   for (const attempt of attempts) {
-    const evaluation = assignmentResultSchema.safeParse(attempt.evaluation);
+    const evaluation = assignmentResultSchema.safeParse(attempt["evaluation"]);
     if (evaluation.success && evaluation.data.passed && !evaluation.data.needsFollowUp) {
-      const phases = passed.get(attempt.course_id) ?? new Set<string>();
-      phases.add(attempt.phase_id);
-      passed.set(attempt.course_id, phases);
+      const phases = passed.get(attempt["course_id"]) ?? new Set<string>();
+      phases.add(attempt["phase_id"]);
+      passed.set(attempt["course_id"], phases);
     }
   }
   return Object.fromEntries(courses.map((course) => {
@@ -204,19 +204,19 @@ export const saveCourseProgress = createServerFn({ method: "POST" })
     ]);
     if (!courseSnapshot.exists) throw new Error("This course was not found in your account.");
     const courseData = courseSnapshot.data();
-    const plan = publicCourseSchema.safeParse(courseData?.plan);
+    const plan = publicCourseSchema.safeParse(courseData?.["plan"]);
     if (!plan.success) throw new Error("This course plan could not be validated. Please reload it.");
     const existing = progressSnapshot.data() ?? {};
     const attempts = attemptsSnapshot.docs.map((doc) => doc.data());
     const donePhases = new Set(attempts.flatMap((attempt) => {
-      const result = assignmentResultSchema.safeParse(attempt.evaluation);
-      return result.success && result.data.passed && !result.data.needsFollowUp ? [attempt.phase_id as string] : [];
+      const result = assignmentResultSchema.safeParse(attempt["evaluation"]);
+      return result.success && result.data.passed && !result.data.needsFollowUp ? [attempt["phase_id"] as string] : [];
     }));
     const allTopics = plan.data.phases.flatMap((phase) => phase.topics.map((topic) => ({ phase, topic })));
-    const existingCompleted = Array.isArray(existing.completed_topic_ids) ? existing.completed_topic_ids as string[] : [];
+    const existingCompleted = Array.isArray(existing["completed_topic_ids"]) ? existing["completed_topic_ids"] as string[] : [];
     const conceptRows = new Map(conceptsSnapshot.docs.map((doc) => {
       const row = doc.data();
-      return [typeof row.concept === "string" ? row.concept.toLowerCase() : "", row];
+      return [typeof row["concept"] === "string" ? row["concept"].toLowerCase() : "", row];
     }));
     const skipIds = Array.from(new Set(data.patch.skipTopicIds ?? []));
     const newlyCompleted = Array.from(new Set([
@@ -229,9 +229,9 @@ export const saveCourseProgress = createServerFn({ method: "POST" })
       if (!entry) throw new Error("This progress update contains a lesson outside the saved course.");
       const hasDemonstratedCoverage = entry.topic.covers.length > 0 && entry.topic.covers.every((name) => {
         const concept = conceptRows.get(name.toLowerCase());
-        return typeof concept?.status === "string" &&
-          concept.status.startsWith("Demonstrated") &&
-          typeof concept.clean_successes === "number" && concept.clean_successes >= 2;
+        return typeof concept?.["status"] === "string" &&
+          concept["status"].startsWith("Demonstrated") &&
+          typeof concept["clean_successes"] === "number" && concept["clean_successes"] >= 2;
       });
       if (!existingCompleted.includes(topicId) && !hasDemonstratedCoverage) {
         throw new Error("This lesson can only be skipped when its concepts have independently demonstrated evidence.");
@@ -268,8 +268,8 @@ export const saveCourseProgress = createServerFn({ method: "POST" })
       }
     }
     const next = {
-      current_phase_id: data.patch.current_phase_id === undefined ? existing.current_phase_id ?? null : phaseId,
-      current_topic_id: data.patch.current_topic_id === undefined ? existing.current_topic_id ?? null : topicId,
+      current_phase_id: data.patch.current_phase_id === undefined ? existing["current_phase_id"] ?? null : phaseId,
+      current_topic_id: data.patch.current_topic_id === undefined ? existing["current_topic_id"] ?? null : topicId,
       completed_topic_ids: newlyCompleted,
       updated_at: new Date().toISOString(),
     };
