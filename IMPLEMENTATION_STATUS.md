@@ -32,8 +32,8 @@ questions are unaffected); guest rate limiting trusts the first `X-Forwarded-For
 
 ## Hardening update (2026-10-17, second pass)
 
-- **Type check clean:** `tsc --noEmit` now reports 0 errors (was 107). `noPropertyAccessFromIndexSignature` was turned off
-  (style only; it flagged `process.env.X` access). The remaining fixes were real typing issues, plus one real bug:
+- **Type check clean:** `tsc --noEmit` now reports 0 errors (was 107) with strict index-signature access still enabled (env and
+  Firestore fields use bracket access). Besides typing fixes there was one real bug:
   `startCourse` used a `{phase, topic}` entry as a topic, so resuming at a saved lesson position lost the lesson id.
 - **Signed course plans:** `askTutor` now returns a `planSignature` (HMAC-SHA256 with the active signing key) for generated plans.
   `saveCourse` verifies it and derives title, goal, outcomes and topics from the signed plan, so learners cannot edit phase
