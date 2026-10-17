@@ -20,7 +20,7 @@ const input = z.object({
 });
 
 export const askTutor = createServerFn({ method: "POST" })
-  .inputValidator((d: unknown) => {
+  .validator((d: unknown) => {
     const parsed = input.parse(d);
     if (JSON.stringify(parsed.payload).length > 20_000) throw new Error("Input too long");
     return parsed;
@@ -58,7 +58,7 @@ const answerInput = z.object({
 });
 
 export const checkTutorAnswer = createServerFn({ method: "POST" })
-  .inputValidator((d: unknown) => answerInput.parse(d))
+  .validator((d: unknown) => answerInput.parse(d))
   .handler(async ({ data }) => {
     const userId = await optionalFirebaseUserId();
     await enforceSharedLimits(userId ?? undefined);

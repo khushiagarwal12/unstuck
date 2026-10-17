@@ -84,7 +84,7 @@ function completedPhases(courses: { id: string; plan?: unknown }[], attempts: Do
 
 export const loadWorkspace = createServerFn({ method: "GET" })
   .middleware([requireFirebaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z
       .object({
         displayName: z.string().max(200).nullable().optional(),
@@ -144,7 +144,7 @@ export const loadWorkspace = createServerFn({ method: "GET" })
 
 export const saveProfile = createServerFn({ method: "POST" })
   .middleware([requireFirebaseAuth])
-  .inputValidator((data: unknown) => profilePatch.parse(data))
+  .validator((data: unknown) => profilePatch.parse(data))
   .handler(async ({ data, context }) => {
     const uid = (context as UserContext).userId;
     await enforceSharedLimits(uid);
@@ -156,7 +156,7 @@ export const saveProfile = createServerFn({ method: "POST" })
 
 export const saveCourse = createServerFn({ method: "POST" })
   .middleware([requireFirebaseAuth])
-  .inputValidator((data: unknown) => courseDraft.parse(data))
+  .validator((data: unknown) => courseDraft.parse(data))
   .handler(async ({ data, context }) => {
     const uid = (context as UserContext).userId;
     await enforceSharedLimits(uid);
@@ -194,7 +194,7 @@ export const saveCourse = createServerFn({ method: "POST" })
 
 export const deleteCourse = createServerFn({ method: "POST" })
   .middleware([requireFirebaseAuth])
-  .inputValidator((data: unknown) => z.object({ courseId: z.string().uuid() }).parse(data))
+  .validator((data: unknown) => z.object({ courseId: z.string().uuid() }).parse(data))
   .handler(async ({ data, context }) => {
     const uid = (context as UserContext).userId;
     await enforceSharedLimits(uid);
@@ -225,7 +225,7 @@ export const deleteCourse = createServerFn({ method: "POST" })
 
 export const saveCourseProgress = createServerFn({ method: "POST" })
   .middleware([requireFirebaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z.object({ courseId: z.string().uuid(), patch: progressPatch }).parse(data),
   )
   .handler(async ({ data, context }) => {
@@ -373,7 +373,7 @@ export const saveCourseProgress = createServerFn({ method: "POST" })
 
 export const deleteConcept = createServerFn({ method: "POST" })
   .middleware([requireFirebaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z.object({ conceptId: z.string().regex(/^[a-f0-9]{64}$/) }).parse(data),
   )
   .handler(async ({ data, context }) => {
@@ -385,7 +385,7 @@ export const deleteConcept = createServerFn({ method: "POST" })
 
 export const rescheduleConcept = createServerFn({ method: "POST" })
   .middleware([requireFirebaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z.object({ conceptId: z.string().regex(/^[a-f0-9]{64}$/) }).parse(data),
   )
   .handler(async ({ data, context }) => {
@@ -401,7 +401,7 @@ export const rescheduleConcept = createServerFn({ method: "POST" })
 
 export const recordLearningHint = createServerFn({ method: "POST" })
   .middleware([requireFirebaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z.object({ concept: z.string().trim().min(1).max(80) }).parse(data),
   )
   .handler(async ({ data, context }) => {
@@ -414,7 +414,7 @@ export const recordLearningHint = createServerFn({ method: "POST" })
 
 export const importGuestProgress = createServerFn({ method: "POST" })
   .middleware([requireFirebaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z
       .object({
         conversionId: z.string().uuid(),

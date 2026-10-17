@@ -36,7 +36,7 @@ const photo = z.object({
 
 /** Gemini vision: read a photo of a problem, worksheet or notes into text the learner can edit. */
 export const readProblem = createServerFn({ method: "POST" })
-  .inputValidator((d: unknown) => photo.parse(d))
+  .validator((d: unknown) => photo.parse(d))
   .handler(async ({ data }) => {
     await enforceSharedLimits((await optionalFirebaseUserId()) ?? undefined);
     enforceLimits();
@@ -61,7 +61,7 @@ const lang = z.enum(LANGUAGE_CODES);
 
 /** Cloud Text-to-Speech. */
 export const speakText = createServerFn({ method: "POST" })
-  .inputValidator((d: unknown) =>
+  .validator((d: unknown) =>
     z.object({ text: z.string().trim().min(1).max(4500), language: lang }).parse(d),
   )
   .handler(async ({ data }) => {
@@ -72,7 +72,7 @@ export const speakText = createServerFn({ method: "POST" })
 
 /** Cloud Translation. */
 export const translateLesson = createServerFn({ method: "POST" })
-  .inputValidator((d: unknown) =>
+  .validator((d: unknown) =>
     z
       .object({ texts: z.array(z.string().trim().min(1).max(3000)).min(1).max(12), language: lang })
       .parse(d),
@@ -88,7 +88,7 @@ const DAY = 24 * 60 * 60_000;
 
 /** YouTube Data API. Cached for a day because search costs 100 quota units per call. */
 export const findConceptVideo = createServerFn({ method: "POST" })
-  .inputValidator((d: unknown) =>
+  .validator((d: unknown) =>
     z.object({ concept: z.string().trim().min(2).max(120), language: lang }).parse(d),
   )
   .handler(async ({ data }) => {

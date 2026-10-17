@@ -28,7 +28,7 @@ const requestSchema = z.object({
 
 export const evaluateCourseAssignment = createServerFn({ method: "POST" })
   .middleware([requireFirebaseAuth])
-  .inputValidator((data: unknown) => requestSchema.parse(data))
+  .validator((data: unknown) => requestSchema.parse(data))
   .handler(async ({ data, context }) => {
     const uid = context.userId;
     await enforceSharedLimits(uid);
@@ -172,7 +172,7 @@ Return exactly {"grades":[{"questionId":string,"criteria":[{"criterion":string,"
 
 export const recordAssessmentHint = createServerFn({ method: "POST" })
   .middleware([requireFirebaseAuth])
-  .inputValidator((data: unknown) =>
+  .validator((data: unknown) =>
     z
       .object({
         courseId: z.string().uuid(),

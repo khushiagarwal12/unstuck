@@ -1,5 +1,5 @@
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { getFirebaseAuth, isFirebaseConfigured } from "@/integrations/firebase/client";
 import { LessonTools, type Caps } from "@/components/LessonTools";
 import { LearningHelper } from "@/components/LearningHelper";
@@ -13,6 +13,7 @@ import {
 } from "@/lib/session-storage";
 import { askTutor, checkTutorAnswer } from "@/lib/tutor.functions";
 import { recordLearningHint } from "@/lib/workspace.functions";
+const clean = (s: string) => s.replace(/\*\*?|__|`/g, "");
 
 type Option = { text: string };
 type Diag = {
@@ -510,12 +511,18 @@ export function LearnSession({
           aria-label="Session progress"
         >
           {STAGES.map((s, i) => (
-            <li
-              key={s.id}
-              className={`rounded-full px-3 py-1 ${i === stageIdx ? "bg-primary text-primary-foreground" : i < stageIdx ? "bg-secondary text-secondary-foreground" : "text-muted-foreground"}`}
-            >
-              {s.label}
-            </li>
+            <Fragment key={s.id}>
+              <li
+                className={`rounded-full px-3 py-1 ${i === stageIdx ? "bg-primary text-primary-foreground" : i < stageIdx ? "bg-secondary text-secondary-foreground" : "text-muted-foreground"}`}
+              >
+                {s.label}
+              </li>
+              {i < STAGES.length - 1 && (
+                <li aria-hidden="true" className="text-muted-foreground">
+                  →
+                </li>
+              )}
+            </Fragment>
           ))}
         </ol>
       )}
@@ -619,7 +626,7 @@ export function LearnSession({
                 disabled={!topic.trim() || !!loading}
                 className="rounded-lg bg-primary px-5 py-2.5 font-medium text-primary-foreground disabled:opacity-50"
               >
-                Get unstuck
+                Let's Go!
               </button>
             </div>
           </form>
@@ -627,9 +634,9 @@ export function LearnSession({
       )}
 
       {stage === "diagnostic" && diag && (
-        <Card kicker="Quick check" why={diag.why}>
-          <h2 className="text-2xl font-semibold">{diag.question}</h2>
-          <Choices options={diag.options.map((o) => o.text)} picked={picked} onPick={setPicked} />
+        <Card kicker="Quick check" why={clean(diag.why)}>
+          <h2 className="text-2xl font-semibold">{clean(diag.question)}</h2>
+          <Choices options={diag.options.map((o) => clean(o.text))} picked={picked} onPick={setPicked} />
           <Primary
             disabled={picked == null || !!loading}
             onClick={() => {
@@ -675,7 +682,7 @@ export function LearnSession({
                         ? "Fairly likely"
                         : h.confidence === "medium"
                           ? "Possible"
-                          : "Just a hunch"}
+                          : "Possible gap"}
                     </span>
                     <button
                       onClick={() => {
@@ -770,8 +777,8 @@ export function LearnSession({
           kicker={`New context · ${transfer.context}`}
           why="Same idea, different situation. No hints this time — that's how we know it stuck."
         >
-          <h2 className="text-2xl font-semibold">{transfer.question}</h2>
-          <Choices options={transfer.options} picked={tPick} onPick={setTPick} />
+          <h2 className="text-2xl font-semibold">{clean(transfer.question)}</h2>
+          <Choices options={transfer.options.map(clean)} picked={tPick} onPick={setTPick} />
           <Primary
             disabled={tPick == null || !!loading}
             onClick={() => {
@@ -790,7 +797,7 @@ export function LearnSession({
           ) : (
             <h2 className="text-3xl font-semibold">Not quite yet.</h2>
           )}
-          {transfer.explanation && <p className="mt-3 leading-relaxed">{transfer.explanation}</p>}
+          {transfer.explanation && <p className="mt-3 leading-relaxed">{clean(transfer.explanation)}</p>}
           <p className="mt-5 rounded-lg bg-secondary p-4 text-sm">
             <strong>{status}.</strong>{" "}
             {status === "Demonstrated under current criteria"
@@ -894,8 +901,8 @@ function FollowUp({
         One more question
       </p>
       <p className="mt-1 text-sm text-muted-foreground">{fu.why}</p>
-      <p className="mt-3 text-lg font-medium">{fu.question}</p>
-      <Choices options={fu.options} picked={p} onPick={setP} />
+      <p className="mt-3 text-lg font-medium">{clean(fu.question)}</p>
+      <Choices options={fu.options.map(clean)} picked={p} onPick={setP} />
       <Primary
         disabled={p == null || disabled}
         onClick={() => p != null && onAnswer(fu.options[p] ?? "")}

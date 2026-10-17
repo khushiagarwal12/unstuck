@@ -26,9 +26,18 @@ copy .env.example .env
 npm run dev
 ```
 
-Set the Firebase web configuration and signing key ring in `.env`. For local server access to Firestore, Firebase
-Auth verification and Vertex AI, configure Google ADC (for example, `gcloud auth application-default login`) and
-set `FIREBASE_PROJECT_ID` and `GOOGLE_CLOUD_PROJECT`. See [Google and Firebase setup](docs/GOOGLE_SETUP.md).
+**IMPORTANT:** Google sign-in will not work until you configure Firebase. Follow the step-by-step guide in
+[docs/FIREBASE_SIGNIN_SETUP.md](docs/FIREBASE_SIGNIN_SETUP.md) to:
+
+1. Enable Google Authentication in Firebase Console
+2. Configure authorized domains
+3. Register a Web app and get the four `VITE_FIREBASE_*` values
+4. Create a Firestore database and deploy security rules
+5. Fill in the required environment variables in `.env`
+
+Without Firebase configuration, the app works in guest mode only (local storage, no cross-device sync).
+
+For full Firebase/Google Cloud setup including Vertex AI, see [docs/GOOGLE_SETUP.md](docs/GOOGLE_SETUP.md).
 
 ## Checks
 

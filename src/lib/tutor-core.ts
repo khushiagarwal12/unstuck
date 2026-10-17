@@ -36,7 +36,8 @@ async function generateValid(
     try {
       const parsed = schemas[action].parse(JSON.parse(extractJson(raw)));
       return parsed;
-    } catch {
+    } catch (e) {
+      console.error(`[tutor:${action}] attempt ${attempt} failed`, e, "\nRAW:", raw.slice(0, 1500));
       note =
         "\n\nYour previous reply did not match the required JSON shape. Reply again with only the JSON object.";
     }

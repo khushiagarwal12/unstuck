@@ -339,22 +339,20 @@ export function LearningHelper({
 
   return (
     <section
-      className="mt-4 rounded-lg border bg-background"
+      className={`fixed bottom-4 right-4 z-50 rounded-lg border bg-background shadow-xl ${open ? "w-[calc(100vw-2rem)] max-w-sm" : "w-auto"}`}
       aria-label="Persistent learning helper"
     >
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
-        className="flex w-full items-center justify-between gap-3 p-3 text-left font-medium"
+        className="flex min-h-16 w-full items-center justify-between gap-3 rounded-xl bg-primary px-6 py-4 text-left text-lg font-bold text-primary-foreground shadow-lg hover:opacity-90"
       >
-        <span>Ask your learning helper</span>
-        <span className="text-xs text-muted-foreground">
-          {open ? "Hide" : "Open"} · context saved on this device
-        </span>
+        <span>{open ? "Learning helper" : "💬 Ask helper"}</span>
+        {open && <span className="text-xs text-white">Hide</span>}
       </button>
       {open && (
-        <div className="border-t p-3">
+        <div className="max-h-[70vh] overflow-y-auto border-t p-3">
           <div className="flex max-h-80 flex-col gap-3 overflow-y-auto" aria-live="polite">
             {messages.map((message, index) => (
               <article

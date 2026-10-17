@@ -24,7 +24,8 @@ export async function verifyFirebaseIdToken(
     const decoded = await verify(token);
     if (!decoded.uid) throw new FirebaseAuthenticationError("Missing Firebase UID.");
     return decoded.uid;
-  } catch {
+  } catch (e) {
+    console.error("verifyIdToken failed:", e);
     throw new FirebaseAuthenticationError("Unauthorized: Firebase ID token is invalid or expired.");
-  }
+  } 
 }

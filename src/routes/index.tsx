@@ -461,12 +461,55 @@ function SignInButton({ small }: { small?: boolean }) {
       await signInWithGoogle();
       setBusy(false);
     } catch (error) {
+      // Log full error details in development for debugging
+      if (import.meta.env.DEV) {
+        console.error("Google sign-in error:", error);
+        if (error instanceof Error) {
+          console.error("Error code:", (error as { code?: string }).code);
+          console.error("Error message:", error.message);
+        }
+      }
+
+      // Extract Firebase Auth error code if available
       const code = error instanceof Error && "code" in error ? String(error.code) : "";
-      setErr(
-        code === "auth/popup-closed-by-user"
-          ? "Google sign-in was cancelled. You can try again or continue as a guest."
-          : "Google sign-in couldn't be completed. Check your connection and try again.",
-      );
+      const message = error instanceof Error ? error.message : String(error);
+
+      // Provide user-friendly messages for common Firebase Auth errors
+      let userMessage: string;
+      switch (code) {
+        case "auth/popup-closed-by-user":
+          userMessage =
+            "Google sign-in was cancelled. You can try again or continue as a guest.";
+          break;
+        case "auth/unauthorized-domain":
+          userMessage =
+            "This domain is not authorized for Google sign-in. Add it to Firebase Console → Authentication → Settings → Authorized domains.";
+          break;
+        case "auth/popup-blocked":
+          userMessage =
+            "The sign-in popup was blocked by your browser. Please allow popups for this site and try again.";
+          break;
+        case "auth/cancelled-popup-request":
+          userMessage =
+            "Another sign-in request was already in progress. Please wait and try again.";
+          break;
+        case "auth/internal-error":
+          userMessage =
+            "An internal error occurred during sign-in. This may be a Firebase configuration issue. Check the console for details.";
+          break;
+        case "auth/operation-not-allowed":
+          userMessage =
+            "Google sign-in is not enabled in Firebase Console. Enable it under Authentication → Sign-in method.";
+          break;
+        default:
+          // For unknown errors, include the error code in development
+          userMessage =
+            import.meta.env.DEV && code
+              ? `Google sign-in failed (${code}). Check the console for details.`
+              : "Google sign-in couldn't be completed. Check your connection and try again.";
+      }
+
+      setErr(userMessage);
       setBusy(false);
     }
   };
@@ -662,7 +705,8 @@ function SignedIn({ user, onGuestImport }: { user: User; onGuestImport: () => vo
           return parsed.success ? [parsed.data] : [];
         }),
       );
-    } catch {
+    } catch (e) {
+      console.error("loadWorkspace failed", e);
       setLoadErr(
         "We couldn't load your Firebase learning workspace. Check your connection and retry.",
       );
@@ -1771,10 +1815,10 @@ function Dashboard({
             onClick={nextAction.go}
             className="rounded-lg bg-primary px-5 py-2.5 font-medium text-primary-foreground"
           >
-            Start
+            Resume learning
           </button>
           <button onClick={() => learn()} className="rounded-lg border px-5 py-2.5">
-            I'm stuck on something else
+            Choose my own topic
           </button>
         </div>
       </section>
@@ -1808,8 +1852,7 @@ function Dashboard({
         </div>
         {courseSummaries.length === 0 ? (
           <p className="mt-4 rounded-lg bg-secondary p-4 text-sm">
-            No saved courses yet. Start a learning check, then build a course plan when you're
-            ready.
+            Your saved courses and progress will appear here.
           </p>
         ) : (
           <ul className="mt-4 grid gap-3 md:grid-cols-2">
@@ -2609,7 +2652,7 @@ function Dashboard({
           ) : (
             <p className="text-sm text-muted-foreground">
               {needsDiagnostic
-                ? "Complete one diagnostic first. We'll use what you demonstrate rather than guessing your level."
+                ? "Complete a learning check to start building your personalized learning plan."
                 : "Tell us what you want to learn. We'll propose phases and lessons for you to review before saving."}
             </p>
           )}
@@ -2697,8 +2740,7 @@ function Dashboard({
                       if (file) void readMaterialPhoto(file);
                       event.currentTarget.value = "";
                     }}
-                    className="mt-1 block w-full text-sm"
-                  />
+                    className="mt-1 block w-full text-sm text-muted-foreground file:mr-3 file:cursor-pointer file:rounded-full file:border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-foreground hover:file:bg-secondary/70 disabled:opacity-50"                  />
                   {reading && <span className="text-muted-foreground">Reading photo…</span>}
                 </label>
               )}
@@ -2709,7 +2751,7 @@ function Dashboard({
                 {creating
                   ? "Building proposal…"
                   : needsDiagnostic
-                    ? "Check a concept first"
+                    ? "Check my understanding"
                     : "Build a plan to review"}
               </button>
             </form>
@@ -2787,7 +2829,7 @@ function Dashboard({
                         </span>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">{rationale}</p>
-                      {group !== "done" && c.misconceptions[0] && (
+                      {group !== "done" && c.misconceptions?.[0] && (
                         <p className="mt-1 text-xs text-muted-foreground">
                           Possible gap noted during diagnosis: {c.misconceptions[0]}
                         </p>
