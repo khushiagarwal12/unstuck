@@ -1,0 +1,60 @@
+From 08249407ea206f5698e39e37bf5465b47b5e1a75 Mon Sep 17 00:00:00 2001
+From: Claude <n@a.co>
+Date: Sun, 18 Oct 2026 06:22:08 +0000
+Subject: [PATCH] Send x-goog-user-project quota header with ADC for
+ TTS/Translation
+
+---
+ src/lib/google-apis.server.ts |  9 ++++++++-
+ src/test/google.test.ts       | 15 +++++++++++++++
+ 2 files changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/src/lib/google-apis.server.ts b/src/lib/google-apis.server.ts
+index ebed041..e88780c 100644
+--- a/src/lib/google-apis.server.ts
++++ b/src/lib/google-apis.server.ts
+@@ -16,7 +16,14 @@ function failure(status: number, what: string): GoogleApiError {
+ async function headers(env: Env): Promise<Record<string, string>> {
+   const key = env["GOOGLE_API_KEY"];
+   if (key) return { "x-goog-api-key": key, "Content-Type": "application/json" };
+-  return { Authorization: `Bearer ${await accessToken(env)}`, "Content-Type": "application/json" };
++  const h: Record<string, string> = {
++    Authorization: `Bearer ${await accessToken(env)}`,
++    "Content-Type": "application/json",
++  };
++  // ADC user credentials need a quota project, otherwise Google answers 403 (USER_PROJECT_DENIED).
++  const project = env["GOOGLE_CLOUD_PROJECT"] || env["FIREBASE_PROJECT_ID"];
++  if (project) h["x-goog-user-project"] = project;
++  return h;
+ }
+ 
+ const hasCloudProject = (env: Env) => !!(env["GOOGLE_CLOUD_PROJECT"] || env["FIREBASE_PROJECT_ID"]);
+diff --git a/src/test/google.test.ts b/src/test/google.test.ts
+index fab0cea..4d8ed89 100644
+--- a/src/test/google.test.ts
++++ b/src/test/google.test.ts
+@@ -80,6 +80,21 @@ describe("Vertex AI provider", () => {
+ });
+ 
+ describe("Google Cloud APIs", () => {
++  it("ADC requests send the quota project; API-key requests do not", async () => {
++    const f = vi.fn(async (_url: string, _init: { headers: Record<string, string> }) => json({ audioContent: "A" }));
++    vi.stubGlobal("fetch", f);
++    const adc = { GOOGLE_ACCESS_TOKEN: "dev" };
++    await synthesizeSpeech({ ...adc, FIREBASE_PROJECT_ID: "fb" }, "x", "en-IN");
++    await synthesizeSpeech({ ...adc, FIREBASE_PROJECT_ID: "fb", GOOGLE_CLOUD_PROJECT: "gc" }, "x", "en-IN");
++    await synthesizeSpeech(adc, "x", "en-IN");
++    await synthesizeSpeech({ GOOGLE_API_KEY: "K", GOOGLE_CLOUD_PROJECT: "gc" }, "x", "en-IN");
++    const h = f.mock.calls.map(([, init]) => init.headers);
++    expect(h[0]).toMatchObject({ Authorization: "Bearer dev", "x-goog-user-project": "fb" });
++    expect(h[1]!["x-goog-user-project"]).toBe("gc");
++    expect(h[2]!["x-goog-user-project"]).toBeUndefined();
++    expect(h[3]!["x-goog-user-project"]).toBeUndefined();
++  });
++
+   it("Text-to-Speech sends the language and returns the audio", async () => {
+     const f = vi.fn().mockResolvedValue(json({ audioContent: "AUDIO" }));
+     vi.stubGlobal("fetch", f);
+-- 
+2.43.0
+

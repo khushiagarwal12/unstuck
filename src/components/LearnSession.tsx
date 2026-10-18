@@ -735,8 +735,8 @@ export function LearnSession({
           kicker={STYLES.find((s) => s.id === lesson.style)?.label ?? "Lesson"}
           why="Aimed at the difficulty we spotted."
         >
-          <h2 className="text-2xl font-semibold">{lesson.title}</h2>
-          <p className="mt-3 whitespace-pre-line leading-relaxed">{lesson.body}</p>
+          <h2 className="text-2xl font-semibold">{clean(lesson.title)}</h2>
+          <p className="mt-3 whitespace-pre-line leading-relaxed">{clean(lesson.body)}</p>
           {lesson.diagram && (
             <pre className="mt-4 overflow-x-auto rounded-lg bg-secondary p-4 font-mono text-sm">
               {lesson.diagram}
@@ -745,7 +745,7 @@ export function LearnSession({
           {lesson.steps?.length > 0 && (
             <ol className="mt-4 list-decimal space-y-2 pl-5">
               {lesson.steps.map((s, i) => (
-                <li key={i}>{s}</li>
+                <li key={i}>{clean(s)}</li>
               ))}
             </ol>
           )}

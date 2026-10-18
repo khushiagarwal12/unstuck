@@ -41,8 +41,11 @@ export async function synthesizeSpeech(
       audioConfig: { audioEncoding: "MP3", speakingRate: 0.95 },
     }),
   });
-  if (!res.ok) throw failure(res.status, "Read-aloud");
-  const { audioContent } = (await res.json()) as { audioContent?: string };
+  if (!res.ok) {
+    console.error("[tts]", res.status, (await res.text()).slice(0, 600));
+    throw failure(res.status, "Read-aloud");
+  }
+    const { audioContent } = (await res.json()) as { audioContent?: string };
   if (!audioContent) throw new GoogleApiError("Read-aloud returned no audio. Try again.");
   return audioContent;
 }
