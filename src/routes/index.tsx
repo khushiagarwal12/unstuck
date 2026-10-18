@@ -1832,7 +1832,7 @@ function Dashboard({
         daysAway={away}
       />
 
-      <section className="card-paper p-6" aria-labelledby="course-overview-heading">
+      {/* <section className="card-paper p-6" aria-labelledby="course-overview-heading">
         <div className="flex flex-wrap items-end justify-between gap-2">
           <div>
             <h2 id="course-overview-heading" className="text-xl font-semibold">
@@ -1938,7 +1938,7 @@ function Dashboard({
             })}
           </ul>
         )}
-      </section>
+      </section> */}
 
       <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr]">
         <section id="learning-journey" className="card-paper space-y-5 p-6">
@@ -2652,7 +2652,7 @@ function Dashboard({
           ) : (
             <p className="text-sm text-muted-foreground">
               {needsDiagnostic
-                ? "Complete a learning check to start building your personalized learning plan."
+                ? "Complete a learning check to start building your personalized learning plan. "
                 : "Tell us what you want to learn. We'll propose phases and lessons for you to review before saving."}
             </p>
           )}
