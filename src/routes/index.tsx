@@ -440,13 +440,13 @@ function GuestDashboard({
 function Shell({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
   return (
     <div className="min-h-screen">
-      <header className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-6">
+      <header className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-6 py-6">
         <span className="font-display text-2xl font-semibold tracking-tight">
           UNSTUCK<span className="text-accent">.</span>
         </span>
         {right}
       </header>
-      <main className="mx-auto max-w-5xl px-6 pb-20">{children}</main>
+      <main className="mx-auto max-w-7xl px-6 pb-20">{children}</main>
     </div>
   );
 }
@@ -1940,7 +1940,7 @@ function Dashboard({
         )}
       </section> */}
 
-      <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr]">
+      <div className="grid gap-8">
         <section id="learning-journey" className="card-paper space-y-5 p-6">
           <div>
             <h2 className="text-xl font-semibold">Your learning journey</h2>
@@ -2763,7 +2763,7 @@ function Dashboard({
           )}
         </section>
 
-        <div className="space-y-8">
+        <div className="grid items-start gap-8 md:grid-cols-2">
           <section className="card-paper p-6">
             <h2 className="text-xl font-semibold">Due for review</h2>
             {due.length === 0 ? (
