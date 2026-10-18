@@ -80,6 +80,21 @@ describe("Vertex AI provider", () => {
 });
 
 describe("Google Cloud APIs", () => {
+  it("ADC requests send the quota project; API-key requests do not", async () => {
+    const f = vi.fn(async (_url: string, _init: { headers: Record<string, string> }) => json({ audioContent: "A" }));
+    vi.stubGlobal("fetch", f);
+    const adc = { GOOGLE_ACCESS_TOKEN: "dev" };
+    await synthesizeSpeech({ ...adc, FIREBASE_PROJECT_ID: "fb" }, "x", "en-IN");
+    await synthesizeSpeech({ ...adc, FIREBASE_PROJECT_ID: "fb", GOOGLE_CLOUD_PROJECT: "gc" }, "x", "en-IN");
+    await synthesizeSpeech(adc, "x", "en-IN");
+    await synthesizeSpeech({ GOOGLE_API_KEY: "K", GOOGLE_CLOUD_PROJECT: "gc" }, "x", "en-IN");
+    const h = f.mock.calls.map(([, init]) => init.headers);
+    expect(h[0]).toMatchObject({ Authorization: "Bearer dev", "x-goog-user-project": "fb" });
+    expect(h[1]!["x-goog-user-project"]).toBe("gc");
+    expect(h[2]!["x-goog-user-project"]).toBeUndefined();
+    expect(h[3]!["x-goog-user-project"]).toBeUndefined();
+  });
+
   it("Text-to-Speech sends the language and returns the audio", async () => {
     const f = vi.fn().mockResolvedValue(json({ audioContent: "AUDIO" }));
     vi.stubGlobal("fetch", f);

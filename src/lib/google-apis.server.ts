@@ -16,7 +16,14 @@ function failure(status: number, what: string): GoogleApiError {
 async function headers(env: Env): Promise<Record<string, string>> {
   const key = env["GOOGLE_API_KEY"];
   if (key) return { "x-goog-api-key": key, "Content-Type": "application/json" };
-  return { Authorization: `Bearer ${await accessToken(env)}`, "Content-Type": "application/json" };
+  const h: Record<string, string> = {
+    Authorization: `Bearer ${await accessToken(env)}`,
+    "Content-Type": "application/json",
+  };
+  // ADC user credentials need a quota project, otherwise Google answers 403 (USER_PROJECT_DENIED).
+  const project = env["GOOGLE_CLOUD_PROJECT"] || env["FIREBASE_PROJECT_ID"];
+  if (project) h["x-goog-user-project"] = project;
+  return h;
 }
 
 const hasCloudProject = (env: Env) => !!(env["GOOGLE_CLOUD_PROJECT"] || env["FIREBASE_PROJECT_ID"]);
