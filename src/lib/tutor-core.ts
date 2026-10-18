@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { promptFor, solvePrompt, SYSTEM } from "./tutor-prompts";
 import {
   type Action,
@@ -39,7 +40,11 @@ async function generateValid(
     } catch (e) {
       console.error(`[tutor:${action}] attempt ${attempt} failed`, e, "\nRAW:", raw.slice(0, 1500));
       note =
-        "\n\nYour previous reply did not match the required JSON shape. Reply again with only the JSON object.";
+        "\n\nYour previous reply did not match the required JSON shape" +
+        (e instanceof z.ZodError
+          ? ` (${e.issues.slice(0, 3).map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}). Keep every string within its length limit.`
+          : ".") +
+        " Reply again with only the JSON object.";
     }
   }
   throw new TutorError(UNUSABLE);

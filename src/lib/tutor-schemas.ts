@@ -12,6 +12,38 @@ export const ACTIONS = [
 export type Action = (typeof ACTIONS)[number];
 
 const text = (max = 600) => z.string().trim().min(1).max(max);
+/** Split an over-long step into <=max-char pieces at sentence (then word) boundaries. */
+function splitStep(step: string, max: number): string[] {
+  const out: string[] = [];
+  let cur = "";
+  const push = () => {
+    if (cur.trim()) out.push(cur.trim());
+    cur = "";
+  };
+  for (const sentence of step.match(/[^.!?]+[.!?]+\s*|[^.!?]+$/g) ?? [step]) {
+    let rest = sentence;
+    while (rest.length > max) {
+      push();
+      const cut = rest.lastIndexOf(" ", max);
+      const at = cut > max / 2 ? cut : max;
+      out.push(rest.slice(0, at).trim());
+      rest = rest.slice(at);
+    }
+    if ((cur + rest).length > max) push();
+    cur += rest;
+  }
+  push();
+  return out;
+}
+
+/** Models sometimes write steps longer than the limit; split them instead of failing. */
+export const fitSteps = (value: unknown, max = 400, count = 8): unknown =>
+  Array.isArray(value)
+    ? value
+        .flatMap((s) => (typeof s === "string" && s.trim().length > max ? splitStep(s.trim(), max) : [s]))
+        .slice(0, count)
+    : value;
+
 const STYLES = ["visual", "example", "hint", "simpler", "analogy", "prerequisite"] as const;
 
 const distinct = (xs: string[]) => new Set(xs.map((x) => x.toLowerCase())).size === xs.length;
@@ -62,7 +94,7 @@ export const interveneSchema = z.object({
   title: text(120),
   body: text(2500),
   diagram: z.string().max(1500).nullable(),
-  steps: z.array(text(400)).max(8),
+  steps: z.preprocess((v) => fitSteps(v), z.array(text(400)).max(8)),
 });
 
 const courseTopicsSchema = z
