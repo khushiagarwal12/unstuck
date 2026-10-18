@@ -1,4 +1,4 @@
-﻿import { useServerFn } from "@tanstack/react-start";
+import { useServerFn } from "@tanstack/react-start";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { getFirebaseAuth, isFirebaseConfigured } from "@/integrations/firebase/client";
 import { LessonTools, type Caps } from "@/components/LessonTools";
@@ -276,7 +276,7 @@ export function LearnSession({
     setTopic(t);
     reset(false);
     call<Diag>(
-      "Preparing a quick checkâ€¦",
+      "Preparing a quick check…",
       "start",
       { stuckOn: t, learnerPreferences: prefs, notes: notes.slice(0, 6000) || undefined },
       (r) => {
@@ -329,7 +329,7 @@ export function LearnSession({
 
   const runDiagnose = (fu = followUps, disp = disputed, observedCorrect = diagnosticCorrect) =>
     call<Diagnosis>(
-      "Weighing what might be going onâ€¦",
+      "Weighing what might be going on…",
       "diagnose",
       {
         ...baseCtx(),
@@ -354,7 +354,7 @@ export function LearnSession({
       if (kind === "diagnostic") void submitDiag();
       else void answerTransfer();
     };
-    setLoading("Checking your answerâ€¦");
+    setLoading("Checking your answer…");
     setError(null);
     try {
       return await checkAnswer({ data: { kind, answerToken, choice } });
@@ -376,7 +376,7 @@ export function LearnSession({
 
   const teach = (style: Style) =>
     call<Omit<Lesson, "style">>(
-      "Building a new explanationâ€¦",
+      "Building a new explanation…",
       "intervene",
       {
         ...baseCtx(),
@@ -393,7 +393,7 @@ export function LearnSession({
 
   const getTransfer = (h = history) =>
     call<Transfer>(
-      "Writing a fresh questionâ€¦",
+      "Writing a fresh question…",
       "transfer",
       {
         ...baseCtx(),
@@ -521,7 +521,7 @@ export function LearnSession({
               </li>
               {i < STAGES.length - 1 && (
                 <li aria-hidden="true" className="text-muted-foreground">
-                  â†’
+                  →
                 </li>
               )}
             </Fragment>
@@ -569,7 +569,7 @@ export function LearnSession({
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               rows={3}
-              placeholder="Paste a question, a concept, or a mistake you keep makingâ€¦"
+              placeholder="Paste a question, a concept, or a mistake you keep making…"
               className="mt-2 w-full resize-none rounded-lg border bg-background p-3 outline-none focus:ring-2 focus:ring-ring"
             />
             {caps.vision && (
@@ -586,7 +586,7 @@ export function LearnSession({
                       e.target.value = "";
                     }}
                   />
-                  {reading ? "Reading your photoâ€¦" : "Snap or upload the problem"}
+                  {reading ? "Reading your photo…" : "Snap or upload the problem"}
                 </label>
                 <span className="ml-2 text-xs text-muted-foreground">
                   Read by Google Gemini. You can edit the text before you continue.
@@ -606,7 +606,7 @@ export function LearnSession({
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 rows={4}
-                placeholder="Paste class notes or a worksheetâ€¦"
+                placeholder="Paste class notes or a worksheet…"
                 className="mt-2 w-full rounded-lg border bg-background p-3 outline-none focus:ring-2 focus:ring-ring"
               />
             </details>
@@ -653,7 +653,7 @@ export function LearnSession({
       {stage === "diagnosis" && diagnosis && (
         <Card
           kicker="What might be going on"
-          why="Your answer tells us something. These are our best guesses â€” not verdicts."
+          why="Your answer tells us something. These are our best guesses — not verdicts."
         >
           <section className="mb-5 rounded-lg bg-secondary p-4">
             <h2 className="font-semibold">What your answers show</h2>
@@ -754,7 +754,7 @@ export function LearnSession({
           <LessonTools lesson={lesson} concept={diag?.concept ?? topic} caps={caps} />
           <div className="mt-8 border-t pt-5">
             <Primary disabled={!!loading} onClick={() => getTransfer()}>
-              I think I get it â€” test me
+              I think I get it — test me
             </Primary>
             <p className="mt-5 text-sm font-medium">Still fuzzy? Teach me another way:</p>
             <div className="mt-2 flex flex-wrap gap-2">
@@ -776,8 +776,8 @@ export function LearnSession({
 
       {stage === "transfer" && transfer && (
         <Card
-          kicker={`New context Â· ${transfer.context}`}
-          why="Same idea, different situation. No hints this time â€” that's how we know it stuck."
+          kicker={`New context · ${transfer.context}`}
+          why="Same idea, different situation. No hints this time — that's how we know it stuck."
         >
           <h2 className="text-2xl font-semibold"><RichText text={transfer.question} /></h2>
           <Choices options={transfer.options.map(clean)} picked={tPick} onPick={setTPick} />
@@ -795,7 +795,7 @@ export function LearnSession({
       {stage === "done" && transfer && (
         <Card kicker="Result" why="">
           {history[history.length - 1]?.correct ? (
-            <h2 className="text-3xl font-semibold text-success">Nice â€” that's right.</h2>
+            <h2 className="text-3xl font-semibold text-success">Nice — that's right.</h2>
           ) : (
             <h2 className="text-3xl font-semibold">Not quite yet.</h2>
           )}
@@ -804,7 +804,7 @@ export function LearnSession({
             <strong>{status}.</strong>{" "}
             {status === "Demonstrated under current criteria"
               ? "Two clean answers in different contexts without hints. Come back later to make sure it lasts."
-              : `We look for two correct answers in a row, in different contexts, without hints${usedHint ? " (you used a hint this session â€” that's fine, it just doesn't count as a clean answer)" : ""}.`}
+              : `We look for two correct answers in a row, in different contexts, without hints${usedHint ? " (you used a hint this session — that's fine, it just doesn't count as a clean answer)" : ""}.`}
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             {status !== "Demonstrated under current criteria" && (

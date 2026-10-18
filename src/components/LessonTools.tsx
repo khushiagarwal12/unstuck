@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { findConceptVideo, speakText, translateLesson } from "@/lib/google.functions";
 import { LANGUAGES, type LanguageCode } from "@/lib/languages";
+import { RichText } from "@/components/RichText";
 
 export type Caps = { vision: boolean; speech: boolean; translate: boolean; video: boolean };
 type Lesson = { title: string; body: string; steps: string[] };
@@ -154,12 +155,12 @@ export function LessonTools({
       )}
       {shown && (
         <div className="mt-4 border-t pt-4">
-          <p className="font-medium">{shown.title}</p>
-          <p className="mt-2 whitespace-pre-line leading-relaxed">{shown.body}</p>
+          <p className="font-medium"><RichText text={shown.title} /></p>
+          <p className="mt-2 whitespace-pre-line leading-relaxed"><RichText text={shown.body} /></p>
           {shown.steps.length > 0 && (
             <ol className="mt-3 list-decimal space-y-1 pl-5">
               {shown.steps.map((s, i) => (
-                <li key={i}>{s}</li>
+                <li key={i}><RichText text={s} /></li>
               ))}
             </ol>
           )}
@@ -192,3 +193,4 @@ export function LessonTools({
     </div>
   );
 }
+
